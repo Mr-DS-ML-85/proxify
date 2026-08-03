@@ -7,7 +7,6 @@
 Deploy as part of the Superbolt stack from the root project:
 
 ```bash
-cd Unified\\ API
 docker compose up -d --build proxy-orchestrator redis flaresolverr
 ```
 
