@@ -383,7 +383,7 @@ All settings live in `proxy-orchestrator/config.py` (a Pydantic `Settings` class
 - [`docs/banner.svg`](docs/banner.svg) — repo banner
 - [`docs/API_AND_PROXY.md`](docs/API_AND_PROXY.md) — REST/WS API + proxy reference
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — pipeline & strategy docs
-- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — deployment guide
+
 
 ---
 
