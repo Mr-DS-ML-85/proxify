@@ -1,0 +1,48 @@
+# Root .dockerignore — build context is the repository root (see
+# docker-compose.yml). Excludes everything the
+# Dockerfile doesn't COPY so the context stays small.
+
+# Virtualenvs / package manager dirs (very large)
+**/.venv
+**/venv
+**/node_modules
+**/.cache
+
+# Python artifacts
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+**/.pytest_cache
+dist
+build
+
+# VCS / tooling
+.git
+.claude
+.claude-flow
+graphify-out
+**/.mypy_cache
+**/.ruff_cache
+
+# Secrets / env
+.env
+*.env
+
+# Logs / misc
+*.log
+*.bak
+
+# Sibling projects NOT referenced by the image (kept out of context for speed)
+ai-captcha
+ai-captcha-bypass
+
+# Root-level docs / configs not needed inside the image
+captcha_types.md
+BUG_POWER.md
+Makefile
+requirements.txt
+pyproject.toml
+proven-config.json
+.proven-config-version
+settings.local.json

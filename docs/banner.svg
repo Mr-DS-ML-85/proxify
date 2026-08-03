@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="proxy-orchestrator — Anti-Bot Bypass Gateway">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117"/>
+      <stop offset="100%" style="stop-color:#010409"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#58a6ff"/>
+      <stop offset="50%" style="stop-color:#3fb950"/>
+      <stop offset="100%" style="stop-color:#f0883e"/>
+    </linearGradient>
+  </defs>
+  <!-- window -->
+  <rect x="40" y="30" width="1120" height="240" rx="12" fill="url(#bg)" stroke="#30363d" stroke-width="2"/>
+  <!-- title bar -->
+  <rect x="40" y="30" width="1120" height="36" rx="12" fill="#161b22"/>
+  <rect x="40" y="54" width="1120" height="12" fill="#161b22"/>
+  <circle cx="68" cy="48" r="7" fill="#ff5f56"/>
+  <circle cx="90" cy="48" r="7" fill="#ffbd2e"/>
+  <circle cx="112" cy="48" r="7" fill="#27c93f"/>
+  <text x="140" y="54" font-family="Menlo,Consolas,monospace" font-size="15" fill="#8b949e">proxy-orchestrator — main.py</text>
+
+  <!-- code lines use tspan flow so characters never overlap -->
+  <text x="80" y="95" font-family="Menlo,Consolas,monospace" font-size="16" fill="#e6edf3">
+    <tspan fill="#8b949e">1 </tspan><tspan fill="#7ee787">from </tspan><tspan fill="#79c0ff">engine </tspan><tspan fill="#7ee787">import </tspan><tspan fill="#d2a8ff">DecisionEngine</tspan>
+  </text>
+  <text x="80" y="125" font-family="Menlo,Consolas,monospace" font-size="16" fill="#e6edf3">
+    <tspan fill="#8b949e">2 </tspan><tspan fill="#79c0ff">engine </tspan><tspan fill="#ff7b72">= </tspan><tspan fill="#d2a8ff">DecisionEngine</tspan><tspan fill="#ff7b72">(</tspan><tspan fill="#ffa657">cookie_file</tspan><tspan fill="#ff7b72">=</tspan><tspan fill="#a5d6ff">"/app/gui-cookies.txt"</tspan><tspan fill="#ff7b72">)</tspan>
+  </text>
+  <text x="80" y="155" font-family="Menlo,Consolas,monospace" font-size="16" fill="#e6edf3">
+    <tspan fill="#8b949e">3 </tspan><tspan fill="#ff7b72">await </tspan><tspan fill="#79c0ff">engine</tspan><tspan fill="#ff7b72">.</tspan><tspan fill="#79c0ff">fetch</tspan><tspan fill="#ff7b72">(</tspan><tspan fill="#ffa657">url</tspan><tspan fill="#ff7b72">=</tspan><tspan fill="#a5d6ff">"https://www.google.com/search?q=weather"</tspan><tspan fill="#ff7b72">)</tspan>
+  </text>
+  <text x="80" y="185" font-family="Menlo,Consolas,monospace" font-size="16" fill="#e6edf3">
+    <tspan fill="#ff7b72"># </tspan><tspan fill="#8b949e">→ persona: chrome146 · curl_cffi_plus → simple → tls_rotator → gui_chrome (GUI VM backup)</tspan>
+  </text>
+
+  <!-- result box -->
+  <rect x="80" y="200" width="940" height="48" rx="8" fill="#0d1117" stroke="#238636" stroke-width="1.5"/>
+  <text x="100" y="222" font-family="Menlo,Consolas,monospace" font-size="14" fill="#e6edf3">
+    <tspan fill="#3fb950">✓ 200 OK · </tspan><tspan fill="#e6edf3">strategy=simple · </tspan><tspan fill="#58a6ff">10 results · </tspan><tspan fill="#f0883e">743 words markdown</tspan>
+  </text>
+  <text x="100" y="242" font-family="Menlo,Consolas,monospace" font-size="13" fill="#8b949e">cookies imported: 103 (google+reddit) · persona pinned · auto cookie refresh · gui chrome: last-resort backup</text>
+
+  <!-- accent line -->
+  <rect x="40" y="270" width="1120" height="4" rx="2" fill="url(#accent)"/>
+</svg>

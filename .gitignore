@@ -1,0 +1,33 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.installed.cfg
+
+# ── Virtualenvs ─────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Caches / tooling ────────────────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.log
+
+# ── Secrets / env (NEVER publish) ───────────────────────
+.env
+*.env
+!.env.example
+
+# ── OS / editor ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
