@@ -24,6 +24,8 @@ htmlcov/
 .env
 *.env
 !.env.example
+# Real session cookies (exported from your browser)
+gui-cookies.txt
 
 # ── OS / editor ─────────────────────────────────────────
 .DS_Store
