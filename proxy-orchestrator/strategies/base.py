@@ -23,6 +23,10 @@ class FetchRequest:
     bypass_cache: bool = False
     session_id: Optional[str] = None
     force_new_session: bool = False
+    # Optional CSS selector to wait for before returning the page (JS-gated
+    # content like Yandex CBIR results that render asynchronously after a
+    # POST/upload). Browser strategies wait up to ~8s for it to appear.
+    wait_selector: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

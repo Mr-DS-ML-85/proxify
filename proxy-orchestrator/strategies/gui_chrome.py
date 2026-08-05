@@ -269,6 +269,7 @@ class GuiChromeStrategy(BaseStrategy):
                             await route.continue_()
 
                     try:
+                        # page.route() is async and returns an AsyncContextManager
                         async with await page.route(
                             request.url, _override_request
                         ):
@@ -307,8 +308,22 @@ class GuiChromeStrategy(BaseStrategy):
                     except Exception:
                         pass
 
+                # Optional wait: JS-gated content (Yandex CBIR results after
+                # an upload/POST, etc.) renders asynchronously. Wait for the
+                # requested selector so the returned page carries the results.
+                waited = False
+                if request.wait_selector:
+                    try:
+                        await page.wait_for_selector(
+                            request.wait_selector, timeout=min(12000, int(request.timeout * 1000))
+                        )
+                        await asyncio.sleep(random.uniform(0.05, 0.2))
+                        waited = True
+                    except Exception:
+                        pass
+
                 await asyncio.sleep(random.uniform(0.05, 0.15))
-                if not _used_fetch:
+                if not _used_fetch or waited:
                     html = await page.content()
 
                 # Harvest cookies from the persistent GUI profile → cookie jar

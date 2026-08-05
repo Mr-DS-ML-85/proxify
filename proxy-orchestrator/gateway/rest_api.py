@@ -35,6 +35,9 @@ class FetchRequestBody(BaseModel):
     #   browser="gui_chrome|playwright|puppeteer|..." → force that exact strategy
     use_browser: bool = False
     browser: Optional[str] = None
+    # Optional CSS selector the browser strategies wait for before returning
+    # the page (JS-rendered results after an upload/POST).
+    wait_selector: Optional[str] = None
 
 
 class FetchResponseBody(BaseModel):
@@ -196,6 +199,7 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
             bypass_cache=body.bypass_cache,
             session_id=body.session_id,
             force_new_session=body.force_new_session,
+            wait_selector=body.wait_selector,
         )
 
         result = await engine.fetch(request)
