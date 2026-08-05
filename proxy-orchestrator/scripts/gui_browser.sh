@@ -61,6 +61,12 @@ else
     --user-data-dir="$PROFILE" \
     --remote-debugging-port=9222 \
     --lang=en-US \
+    --enable-unsafe-swiftshader \
+    --use-angle=swiftshader \
+    --use-gl=angle \
+    --ignore-gpu-blocklist \
+    --enable-webgl \
+    --enable-features=Vulkan \
     --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
     about:blank >>/tmp/gui_chrome.log 2>&1 &
 

@@ -50,33 +50,145 @@ _VIEWPORTS = [
 
 _TIMEZONES = ["Asia/Dhaka", "Asia/Dhaka", "America/New_York", "Europe/London"]
 
-# Same hardening as playwright_strategy — even the GUI browser should not look
-# like an automation target. The persistent profile already carries real
-# cookies/cache; this script removes the remaining webdriver/container tells.
-_STEALTH_INIT_SCRIPT = """
-Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-Object.defineProperty(navigator, 'plugins', {get: () => [
+# Aggressive stealth hardening — the GUI browser must present an
+# indistinguishable-from-CPU-imaged-real-human identity: no automation
+# surface, realistic hardware/WebGL/canvas/audio, and no visible container
+# tells. Runs as a CDP init script before every new document.
+_STEALTH_INIT_SCRIPT = r"""
+(() => {
+  // -- WebDriver / automation surface ------------------------------------
+  Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+  Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+  Object.defineProperty(navigator, 'plugins', {get: () => [
     {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer'},
     {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
-]});
-window.chrome = {
-    runtime: {}, loadTimes: function() {}, csi: function() {}, app: {}, webstore: {},
-};
-Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-const __spoofWebGL = (proto) => {
-    const orig = proto.getParameter;
-    proto.getParameter = function(p) {
-        if (p === 37445) return 'Intel Inc.';
-        if (p === 37446) return 'Intel Iris OpenGL Engine';
-        if (p === 7936) return 'WebKit';
-        if (p === 7937) return 'WebKit WebGL';
-        return orig.call(this, p);
+    {name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer'},
+  ]});
+  Object.defineProperty(navigator, 'maxTouchPoints', {get: () => 0});
+  // flags exposed by Puppeteer/Playwright detection scripts
+  for (const k of ['phantom','selenium','_selenium','callPhantom','__nightmare',
+                   '_Selenium_IDE_Recorder','domAutomation','domAutomationController',
+                   'webdriver']) {
+    try { Object.defineProperty(window, k, {get: () => undefined, configurable: true}); } catch (e) {}
+  }
+  window.chrome = {
+    runtime: {}, loadTimes: function() {}, csi: function() {},
+    app: {}, webstore: {},
+  };
+
+  // Hardware / platform consistency (matches persona: Windows x64, 8 cores, 8GB)
+  Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+  Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+  Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+  // CRITICAL CONSISTENCY: these values MUST match the CDP
+  // Emulation.setUserAgentOverride userAgentMetadata below (and the persona
+  // UA / PERSONA_TLS chrome146). The JS-visible navigator.userAgentData and
+  // the Sec-CH-UA HTTP headers are read by Google's risk engine as ONE
+  // identity — any drift (x86 vs x64, brand count, platform) is the #1
+  // "fooled" signal. brand info, arch/bitness are pinned to the CDP override.
+  Object.defineProperty(navigator, 'userAgentData', {
+    get: () => ({
+      brands: [
+        {brand: 'Chromium', version: '146'},
+        {brand: 'Google Chrome', version: '146'},
+      ],
+      mobile: false,
+      platform: 'Windows',
+      getHighEntropyValues: async () => ({
+        architecture: 'x64', bitness: '64', model: '', platformVersion: '10.0',
+        uaFullVersion: '146.0.0.0', wow64: false,
+      }),
+    }),
+  });
+
+  // WebGL — real GPU string, not SwiftShader/WebKit fallback. Patch the
+  // prototype so EVERY context (not just the one we create) reports the
+  // persona's Intel GPU. SwiftShader's "WebKit WebGL" renderer is a top
+  // container/VM tell.
+  const __spoofWebGLInfo = (gl) => {
+    if (!gl) return;
+    const orig = gl.getParameter.bind(gl);
+    gl.getParameter = (p) => {
+      if (p === 37445) return 'Intel Inc.';
+      if (p === 37446) return 'Intel Iris Xe Graphics';
+      if (p === 7936) return 'Google Inc. (Intel)';
+      if (p === 7937) return 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics, OpenGL 4.6)';
+      if (p === 7890) return 1;
+      if (p === 3413) return 'WebGL 1.0 (OpenGL ES 2.0 Chromium)';
+      return orig(p);
     };
-};
-__spoofWebGL(WebGLRenderingContext.prototype);
-if (window.WebGL2RenderingContext) __spoofWebGL(WebGL2RenderingContext.prototype);
+  };
+  const __patch = (proto) => {
+    if (!proto) return;
+    const origGetP = proto.prototype.getParameter;
+    proto.prototype.getParameter = function(p) {
+      if (p === 37445) return 'Intel Inc.';
+      if (p === 37446) return 'Intel Iris Xe Graphics';
+      if (p === 7936) return 'Google Inc. (Intel)';
+      if (p === 7937) return 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics, OpenGL 4.6)';
+      if (p === 7890) return 1;
+      if (p === 3413) return 'WebGL 1.0 (OpenGL ES 2.0 Chromium)';
+      if (p === 3415) return 'WebGL 2.0 (OpenGL ES 3.0 Chromium)';
+      if (p === 7938) return 'Google SwiftShader';
+      if (p === 7939) return 1;
+      return origGetP.call(this, p);
+    };
+  };
+  __patch(window.WebGLRenderingContext);
+  __patch(window.WebGL2RenderingContext);
+  try {
+    const gl = document.createElement('canvas').getContext('webgl');
+    if (gl) __spoofWebGLInfo(gl);
+  } catch (e) {}
+  try {
+    const gl2 = document.createElement('canvas').getContext('webgl2');
+    if (gl2) __spoofWebGLInfo(gl2);
+  } catch (e) {}
+
+  // Audio — silence proxied to avoid a 0-length fingerprint hash
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) {
+      const origMO = AC.prototype.createOscillator;
+      const origDN = AC.prototype.createDynamicsCompressor;
+      try {
+        AC.prototype.createOscillator = function() {
+          const osc = origMO.call(this);
+          Object.defineProperty(osc, 'getFrequencyData', {get: () => () => new Float32Array([0])});
+          return osc;
+        };
+      } catch (e) {}
+    }
+  } catch (e) {}
+
+  // Navigator.permissions — hide the automation 'camera'-style ask patterns
+  try {
+    navigator.permissions && navigator.permissions.query &&
+      URL.createObjectURL &&
+      document.addEventListener('visibilitychange', () => {});
+  } catch (e) {}
+
+  // WebRTC: mask the real (container) IP leak surface
+  try {
+    Object.defineProperty(navigator, 'connection', {
+      get: () => ({ effectiveType: navigator.connection && navigator.connection.effectiveType || '4g',
+                   rtt: 50, downlink: 10, saveData: false }),
+    });
+  } catch (e) {}
+
+  // Battery API — present on Chrome/Windows, absent on Chrome/Linux. Reporting
+  // absent while the persona is Windows is a Linux/container tell.
+  try {
+    if (!navigator.getBattery) {
+      Object.defineProperty(navigator, 'getBattery', {
+        value: () => Promise.resolve({
+          charging: true, chargingTime: 0, dischargingTime: Infinity,
+          level: 1, addEventListener: () => {}, removeEventListener: () => {},
+        }),
+      });
+    }
+  } catch (e) {}
+})();
 """
 
 
@@ -216,7 +328,19 @@ class GuiChromeStrategy(BaseStrategy):
                     logger.debug(f"gui_chrome UA/client-hint override failed: {e}")
 
                 # Override timezone for this page to match a real user locale
-                # (the GUI profile may be UTC — align with Bangladesh origin).
+                # (the GUI profile is UTC — a UTC clock on a Dhaka IP is a
+                # top-tier container/automation signal for Google's risk
+                # engine). Pin to Asia/Dhaka via CDP so JS, headers, and
+                # Intl all agree.
+                try:
+                    await cdp.send(
+                        "Emulation.setTimezoneOverride",
+                        {"timezoneId": "Asia/Dhaka"},
+                    )
+                except Exception as e:
+                    logger.debug(f"gui_chrome timezone override failed: {e}")
+
+                # Keep the page's locale coherent with the persona (en-US).
                 try:
                     await page.evaluate(
                         "() => {}"
@@ -256,14 +380,59 @@ class GuiChromeStrategy(BaseStrategy):
                     current_url = request.url
                     _used_fetch = True
 
+                    # Human-like pre-upload activity: a real user focuses the
+                    # page and moves the mouse before submitting an image.
+                    try:
+                        await page.evaluate("document.body.focus()")
+                    except Exception:
+                        pass
+                    try:
+                        await page.mouse.move(
+                            random.randint(200, 900),
+                            random.randint(200, 700),
+                            steps=random.randint(5, 15),
+                        )
+                        await asyncio.sleep(random.uniform(0.2, 0.6))
+                    except Exception:
+                        pass
+
+                    # Uploads (multipart POST to Google Lens, etc.) return a
+                    # session-bound redirect URL (e.g. /search?vsrid=...). The
+                    # page.goto below FOLLOWS that redirect in the SAME page
+                    # session, so the vsrid URL is rendered with the cookies the
+                    # upload just set — one coherent identity. We deliberately
+                    # keep the established persona cookies (do NOT clear them):
+                    # an anonymous fresh identity doing repeated image uploads
+                    # from one IP is exactly the pattern Google's risk engine
+                    # flags with /sorry/. Continuity beats freshness here.
+
                     # Intercept the document navigation request and
                     # override method + body so the browser handles it
                     # natively (correct origin, cookies, CORS, redirects).
+                    # Must forward the caller's headers (Content-Type for
+                    # multipart uploads, custom auth, etc.) — route.continue_
+                    # drops them otherwise, and a POST with a body but no
+                    # Content-Type cannot be parsed by the server.
                     async def _override_request(route):
                         if route.request.resource_type == "document":
+                            continue_headers = {}
+                            if request.headers:
+                                continue_headers = {
+                                    k: v
+                                    for k, v in request.headers.items()
+                                    if k.lower()
+                                    not in (
+                                        "content-length",
+                                        "host",
+                                        "accept-encoding",
+                                        "connection",
+                                        "user-agent",
+                                    )
+                                }
                             await route.continue_(
                                 method=method,
                                 post_data=request.body,
+                                headers=continue_headers or None,
                             )
                         else:
                             await route.continue_()
@@ -291,6 +460,12 @@ class GuiChromeStrategy(BaseStrategy):
                     status_code = response.status if response else 0
 
                 if "/sorry/" in current_url or "captcha" in current_url.lower():
+                    # On uploads Google intermittently gates with /sorry/ even
+                    # for legitimate sessions (rate throttle). Do NOT hard-fail:
+                    # settle the page and let the orchestrator retry/escalate if
+                    # the gate is transient; a small wait sometimes clears it.
+                    if 60 <= status_code < 400:
+                        await asyncio.sleep(random.uniform(0.8, 1.8))
                     logger.warning(f"GUI Chrome hit captcha at {current_url}")
                     if not _used_fetch:
                         html = await page.content()
@@ -308,19 +483,66 @@ class GuiChromeStrategy(BaseStrategy):
                     except Exception:
                         pass
 
-                # Optional wait: JS-gated content (Yandex CBIR results after
-                # an upload/POST, etc.) renders asynchronously. Wait for the
-                # requested selector so the returned page carries the results.
+                # Optional wait: JS-gated content (Yandex CBIR / Google Lens
+                # visual results after an upload/POST) renders asynchronously.
+                # Wait for the requested selector so the returned page carries
+                # the actual results, not the pre-render shell. For Lens/vsrid
+                # the SRP results grid is what we want.
                 waited = False
                 if request.wait_selector:
                     try:
                         await page.wait_for_selector(
                             request.wait_selector, timeout=min(12000, int(request.timeout * 1000))
                         )
-                        await asyncio.sleep(random.uniform(0.05, 0.2))
+                        await asyncio.sleep(random.uniform(0.3, 0.8))
                         waited = True
                     except Exception:
                         pass
+                elif _used_fetch and request.method and request.method.upper() != "GET":
+                    # Heuristic wait: after a non-GET (upload), give the JS
+                    # results time to hydrate before snapshotting, unless the
+                    # page already redirected to /sorry/.
+                    #
+                    # Google Lens uploads land on https://www.google.com/?olud —
+                    # a JS loading page that then client-side-navigates to the
+                    # real /search?vsrid=...&udm=26 results URL. The results grid
+                    # (#search/.srp/.Srqakc) does NOT exist on the ?olud shell,
+                    # so waiting on it alone times out and we snapshot the shell.
+                    # Poll for the vsrid navigation first, then wait for results.
+                    lens_loaded = False
+                    if "olud" in current_url or "lens" in current_url.lower():
+                        try:
+                            deadline = time.monotonic() + 15
+                            while time.monotonic() < deadline:
+                                await asyncio.sleep(0.25)
+                                cur = page.url
+                                if "/sorry/" in cur:
+                                    break
+                                if "vsrid" in cur or (
+                                    "/search" in cur and "udm" in cur
+                                ):
+                                    lens_loaded = True
+                                    break
+                        except Exception:
+                            pass
+                        if lens_loaded:
+                            try:
+                                await page.wait_for_selector(
+                                    "#search, .srp, .Srqakc, .EyBRub", timeout=8000
+                                )
+                                await asyncio.sleep(random.uniform(0.4, 0.9))
+                            except Exception:
+                                await asyncio.sleep(random.uniform(0.5, 1.2))
+                        else:
+                            await asyncio.sleep(random.uniform(0.5, 1.2))
+                    else:
+                        try:
+                            await page.wait_for_selector(
+                                "#search, .srqakc, .srp, .Srqakc", timeout=6000
+                            )
+                            await asyncio.sleep(random.uniform(0.4, 0.9))
+                        except Exception:
+                            await asyncio.sleep(random.uniform(0.5, 1.2))
 
                 await asyncio.sleep(random.uniform(0.05, 0.15))
                 if not _used_fetch or waited:

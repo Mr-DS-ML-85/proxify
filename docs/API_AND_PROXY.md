@@ -4,7 +4,7 @@ Technical specifications for interacting with the Proxify v1.0.0.
 
 ---
 
-## 1. REST API (Port 8085 in Docker, 8080 natively)
+## 1. REST API (Port 8080)
 
 The primary gateway for AI agents and scrapers.
 
@@ -43,7 +43,7 @@ Auto-selects the best strategy, handles caching, rate limiting, and escalation.
 ### `GET /health`
 
 ```json
-{"status": "ok", "active_strategies": 10, "l1_cache_size": 42}
+{"status": "ok", "active_strategies": 11, "l1_cache_size": 42}
 ```
 
 ### `GET /metrics`
@@ -54,6 +54,12 @@ Cache hit rates, strategy success rates, latency percentiles.
 
 Detailed engine statistics for monitoring.
 
+### `GET /cookies/status`, `POST /cookies/refresh`
+
+Imported cookie jar status (domains, counts, source file) and on-demand
+hot-reload of the Netscape cookie file (`COOKIE_FILE`) + injection into the
+GUI Chrome profile (`gui_chrome_injected` in the response).
+
 ### `POST /config`
 
 Runtime configuration updates (strategy order, rate limits, etc).
@@ -62,7 +68,7 @@ Runtime configuration updates (strategy order, rate limits, etc).
 
 ## 2. WebSocket API
 
-**Endpoint**: `ws://<host>:8085/ws/fetch`
+**Endpoint**: `ws://<host>:8080/ws/fetch`
 
 Designed for batch operations and high-concurrency streaming.
 

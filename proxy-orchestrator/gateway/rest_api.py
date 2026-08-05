@@ -2,6 +2,7 @@
 REST API — FastAPI endpoints for AI agents and monitoring.
 """
 
+import base64
 import logging
 from typing import Any, Optional
 
@@ -23,6 +24,7 @@ class FetchRequestBody(BaseModel):
     method: str = "GET"
     headers: dict[str, str] = Field(default_factory=dict)
     body: Optional[str] = None
+    body_b64: Optional[str] = None  # binary-safe HTTP body (base64) for uploads
     params: Optional[dict[str, str]] = None
     timeout: float = 30.0
     proxy_url: Optional[str] = None
@@ -191,7 +193,7 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
             url=body.url,
             method=body.method,
             headers=body.headers,
-            body=body.body.encode() if body.body else None,
+            body=base64.b64decode(body.body_b64) if body.body_b64 else (body.body.encode() if body.body else None),
             params=body.params,
             timeout=body.timeout,
             proxy_url=body.proxy_url,

@@ -403,11 +403,29 @@ class PlaywrightStrategy(BaseStrategy):
                     current_url = request.url
                     _used_fetch = True
 
+                    # Override the document request with the caller's method
+                    # + body. Forward headers (Content-Type for multipart
+                    # uploads) since route.continue_ drops them otherwise.
                     async def _override_request(route):
                         if route.request.resource_type == "document":
+                            continue_headers = {}
+                            if request.headers:
+                                continue_headers = {
+                                    k: v
+                                    for k, v in request.headers.items()
+                                    if k.lower()
+                                    not in (
+                                        "content-length",
+                                        "host",
+                                        "accept-encoding",
+                                        "connection",
+                                        "user-agent",
+                                    )
+                                }
                             await route.continue_(
                                 method=method,
                                 post_data=request.body,
+                                headers=continue_headers or None,
                             )
                         else:
                             await route.continue_()

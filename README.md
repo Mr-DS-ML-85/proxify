@@ -371,13 +371,45 @@ All settings live in `proxy-orchestrator/config.py` (a Pydantic `Settings` class
 
 | Symptom | Fix |
 |---------|-----|
-| Google returns `/sorry/` on the browser path | The GUI Chrome's client hints contradicted its UA (real Chromium 149/Linux vs spoofed Chrome/146/Windows). Fix applied via CDP `Emulation.setUserAgentOverride` (see above). If it recurs, cooldown or residential proxy (IP soft-flag). |
+| Google returns `/sorry/` on the browser path | The GUI Chrome's client hints contradicted its UA (real Chromium 149/Linux vs spoofed Chrome/146/Windows). Fix applied via CDP `Emulation.setUserAgentOverride` (see above). Also check the tunnel MTU (below) — a lossy VPN interface makes every browser request fragment/drop and Google soft-blocks with `/sorry/` even when fingerprints are perfect. |
 | Google `429 Rate limited` under load | Our own per-domain rate limiter + 30s throttle circuit (protection, not a Google block). Space requests out or raise `PER_DOMAIN_RATE_LIMIT`. |
 | Reddit `www` thin/empty | Known server-side throttling of this IP; `old.reddit` is the reliable target (verified working, incl. gui_chrome). |
 | Yandex shows captcha | The profile lacked Yandex cookies (looked like incognito). Re-extract with `--all` (or default `--wanted` now includes `yandex`) so `yandexuid`/`yp`/`_yasc` are injected. |
 | Cookies not injected | Check the file is Netscape format, path matches `COOKIE_FILE`, then `POST /cookies/refresh`. |
 | GUI Chrome not starting | Needs `Xvfb` inside the container; check `/tmp/gui_chrome.log`. |
 | Playwright "not available" | Self-healing browser installer runs automatically; or `python -m playwright install chromium`. |
+
+> ### ⚠️ Tunnel / VPN MTU tuning (packet-loss based)
+>
+> When routing container egress through a wireguard/OpenVPN tunnel (e.g. the
+> `homecloud` Bangladesh tunnel), **do not assume a fixed MTU** — tune it by
+> *measured packet loss*. A too-high interface MTU fragments packets on the
+> remote path, and TCP connections silently drop. This looks like a site
+> block and re-broke Google with `/sorry/` on **every** browser path even
+> though the fingerprints, headers and cookies were all correct.
+>
+> Diagnose it with `ping` over the tunnel (payload = MTU `- 28`):
+>
+> ```bash
+> # link overhead is IP(20) + ICMP(8) = 28 bytes. Loss means fragmenting.
+> ping -c 10 -M do -s 1352 8.8.8.8   # = MTU 1380 → 40% loss (BAD)
+> ping -c 10 -M do -s 1252 8.8.8.8   # = MTU 1280 → 0%  loss (GOOD)
+> ping -c 10 -M do -s 1172 8.8.8.8   # = MTU 1200 → 0%  loss (GOOD)
+> ```
+>
+> Set the interface MTU to the largest size with 0% loss:
+>
+> ```bash
+> ip link set dev homecloud mtu 1280
+> # Click together with: ip route add default dev homecloud
+> ```
+>
+> Symptoms when MTU is too high: raw `curl` intermittently times out
+> (`000`) but returns 200 on clean connections; a real browser (which opens
+> ~6 parallel TLS connections) consistently gets a soft-block such as
+> Google `/sorry/` while plain curl to the same IP succeeds. **Rule of thumb:
+> if a tunnel causes mysterious site blocks `curl` doesn't, lower the MTU
+> until `ping -M do` shows 0% packet loss.**
 
 ---
 
