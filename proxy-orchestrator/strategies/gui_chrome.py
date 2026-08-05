@@ -255,44 +255,39 @@ class GuiChromeStrategy(BaseStrategy):
                 else:
                     current_url = request.url
                     _used_fetch = True
-                    fetch_args = {
-                        "url": request.url,
-                        "method": method,
-                        "redirect": "follow",
-                        "credentials": "include",
-                    }
-                    if request.headers:
-                        fetch_args["headers"] = {
-                            k: v for k, v in request.headers.items()
-                            if k.lower() not in ("content-length", "host")
-                        }
-                    if request.body:
-                        fetch_args["body"] = request.body.decode(
-                            "utf-8", errors="replace"
-                        )
+
+                    # Intercept the document navigation request and
+                    # override method + body so the browser handles it
+                    # natively (correct origin, cookies, CORS, redirects).
+                    async def _override_request(route):
+                        if route.request.resource_type == "document":
+                            await route.continue_(
+                                method=method,
+                                post_data=request.body,
+                            )
+                        else:
+                            await route.continue_()
+
                     try:
-                        result = await page.evaluate(
-                            """
-                            (args) => {
-                                return fetch(args.url, args)
-                                    .then(r => ({
-                                        status: r.status,
-                                        text: r.text()
-                                    }))
-                                    .catch(e => { throw new Error(e.message); });
-                            }
-                            """,
-                            fetch_args,
-                        )
-                        status_code = result.get("status", 200)
-                        html = result.get("text", "")
+                        async with page.route(
+                            request.url, _override_request
+                        ):
+                            response = await page.goto(
+                                request.url,
+                                wait_until="domcontentloaded",
+                                timeout=timeout_ms,
+                            )
                     except Exception as e:
                         return self._make_result(
                             request, start_time,
                             success=False, status_code=0,
                             final_url=current_url, html="",
-                            error=f"GUI Chrome fetch error: {e}",
+                            error=f"GUI Chrome route error: {e}",
                         )
+
+                    current_url = page.url
+                    html = await page.content()
+                    status_code = response.status if response else 0
 
                 if "/sorry/" in current_url or "captcha" in current_url.lower():
                     logger.warning(f"GUI Chrome hit captcha at {current_url}")
@@ -331,7 +326,7 @@ class GuiChromeStrategy(BaseStrategy):
                 if html:
                     cleaned = clean_dom(html, url=request.url)
                     if cleaned.success:
-                        html = cleaned.clean_html
+                        html = cleaned.clean_html or ""
                         if cleaned.google_results:
                             logger.info(
                                 f"GUI Chrome Google DOM cleaned — "

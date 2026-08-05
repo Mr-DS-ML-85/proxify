@@ -56,12 +56,22 @@ puppeteer.use(StealthPlugin());
             await page.setUserAgent(config.userAgent);
         }
 
-        // Block unnecessary resources
+        // Block unnecessary resources and override method for non-GET
+        const method = (config.method || "GET").toUpperCase();
         await page.setRequestInterception(true);
         page.on('request', (req) => {
             const blocked = ['image', 'media', 'font', 'stylesheet'];
             if (blocked.includes(req.resourceType())) {
                 req.abort();
+            } else if (
+                method !== "GET"
+                && req.resourceType() === "document"
+                && req.url() === config.url
+            ) {
+                req.continue({
+                    method: method,
+                    postData: config.body || undefined,
+                });
             } else {
                 req.continue();
             }
@@ -72,7 +82,7 @@ puppeteer.use(StealthPlugin());
             await page.setExtraHTTPHeaders(config.headers);
         }
 
-        // Navigate (GET) or fetch (all other methods)
+        // Navigate (GET) or override method via route (all other methods)
         let html, statusCode, finalUrl;
         const method = (config.method || "GET").toUpperCase();
         if (method === "GET") {
@@ -84,18 +94,29 @@ puppeteer.use(StealthPlugin());
             finalUrl = page.url();
             html = await page.content();
         } else {
-            const resp = await page.evaluate(
-                `(url, m, body, headers) => fetch(url, {
-                    method: m,
-                    headers: headers,
-                    body: body || undefined,
-                    redirect: 'follow'
-                }).then(r => r.text())`,
-                config.url, method, config.body || null, config.headers || {}
-            );
-            statusCode = 200;
-            finalUrl = config.url;
-            html = resp;
+            // Intercept the document request and override method + body
+            // so the browser handles it natively (correct origin, cookies,
+            // CORS, redirects). Using page.route() avoids the null-origin
+            // CORS rejection that fetch() from about:blank suffers from.
+            await page.setRequestInterception(true);
+            page.on('request', (req) => {
+                if (req.resourceType() === 'document' && req.url() === config.url) {
+                    req.continue({
+                        method: method,
+                        postData: config.body || undefined,
+                    });
+                } else {
+                    req.continue();
+                }
+            });
+            const response = await page.goto(config.url, {
+                waitUntil: config.waitUntil || 'domcontentloaded',
+                timeout: config.timeout || 30000,
+            });
+            statusCode = response ? response.status() : 0;
+            finalUrl = page.url();
+            html = await page.content();
+            await page.setRequestInterception(false);
         }
 
         // Wait for Google results if applicable (GET only)
@@ -247,7 +268,7 @@ class PuppeteerStrategy(BaseStrategy):
             if html:
                 cleaned = clean_dom(html, url=request.url)
                 if cleaned.success:
-                    html = cleaned.clean_html
+                    html = cleaned.clean_html or ""
                     if cleaned.google_results:
                         logger.info(
                             f"Puppeteer Google DOM cleaned — "

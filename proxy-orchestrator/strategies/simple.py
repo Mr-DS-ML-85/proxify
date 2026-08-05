@@ -410,7 +410,7 @@ class SimpleStrategy(BaseStrategy):
                     if has_real_content and len(result.html) > 5000:
                         cleaned = clean_dom(result.html, url=request.url)
                         if cleaned.success and cleaned.google_results:
-                            result.html = cleaned.clean_html
+                            result.html = cleaned.clean_html or ""
                             result.metadata["google_results"] = cleaned.google_results
                             result.metadata["google_results_markdown"] = make_google_results_markdown(cleaned.google_results)
                             result.metadata["google_method"] = "persona_ua"
@@ -441,7 +441,7 @@ class SimpleStrategy(BaseStrategy):
                     if has_real_content and len(result.html) > 5000:
                         cleaned = clean_dom(result.html, url=request.url)
                         if cleaned.success and cleaned.google_results:
-                            result.html = cleaned.clean_html
+                            result.html = cleaned.clean_html or ""
                             result.metadata["google_results"] = cleaned.google_results
                             result.metadata["google_results_markdown"] = make_google_results_markdown(cleaned.google_results)
                             result.metadata["google_method"] = "legacy_ua"
@@ -469,7 +469,7 @@ class SimpleStrategy(BaseStrategy):
             if is_google_search and result.success and result.html:
                 cleaned = clean_dom(result.html, url=request.url)
                 if cleaned.success and cleaned.google_results:
-                    result.html = cleaned.clean_html
+                    result.html = cleaned.clean_html or ""
                     result.metadata["google_results"] = cleaned.google_results
                     result.metadata["google_results_markdown"] = make_google_results_markdown(cleaned.google_results)
                     result.metadata["google_method"] = "modern_ua"

@@ -18,6 +18,7 @@ Architecture:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -164,7 +165,7 @@ puppeteer.use(StealthPlugin());
         }
 
         // =================================================================
-        // NAVIGATE (GET) or fetch (all other methods)
+        // NAVIGATE (GET) or route-override (all other methods)
         // =================================================================
         const method = (config.method || "GET").toUpperCase();
         let statusCode, finalUrl, cleanHtml, pageText;
@@ -210,19 +211,59 @@ puppeteer.use(StealthPlugin());
             });
             pageText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 5000) : '');
         } else {
-            const resp = await page.evaluate(
-                `(url, m, body, headers) => fetch(url, {
-                    method: m,
-                    headers: headers,
-                    body: body || undefined,
-                    redirect: 'follow'
-                }).then(r => r.text())`,
-                config.url, method, config.body || null, config.headers || {}
-            );
-            statusCode = 200;
-            finalUrl = config.url;
-            cleanHtml = resp;
-            pageText = resp ? resp.substring(0, 5000) : '';
+            // Decode base64 body back to a Buffer for binary-safe transfer.
+            const postData = config.body
+                ? Buffer.from(config.body, 'base64')
+                : undefined;
+
+            // Intercept the document request and override method + body
+            // so the browser handles it natively (correct origin, cookies,
+            // CORS, redirects). Using page.route() avoids the null-origin
+            // CORS rejection that fetch() from about:blank suffers from.
+            const method_ = method;
+            await page.setRequestInterception(true);
+            page.on('request', function(req) {
+                const blocked = ['image', 'media', 'font', 'stylesheet'];
+                if (blocked.includes(req.resourceType())) {
+                    req.abort();
+                } else if (
+                    method_ !== 'GET'
+                    && req.resourceType() === 'document'
+                    && req.url() === config.url
+                ) {
+                    req.continue({
+                        method: method_,
+                        postData: postData,
+                    });
+                } else {
+                    req.continue();
+                }
+            });
+            const response = await page.goto(config.url, {
+                waitUntil: config.waitUntil || 'domcontentloaded',
+                timeout: config.timeout || 30000,
+            });
+            statusCode = response ? response.status() : 200;
+            finalUrl = page.url();
+            await page.setRequestInterception(false);
+
+            // Human-like delay
+            await new Promise(r => setTimeout(r, 300 + Math.random() * 500));
+
+            // =================================================================
+            // EXTRACT CLEAN DOM
+            // =================================================================
+            cleanHtml = await page.evaluate(() => {
+                const clone = document.documentElement.cloneNode(true);
+                clone.querySelectorAll('script, noscript, iframe, style, link[rel=stylesheet]').forEach(el => el.remove());
+                clone.querySelectorAll('[data-analytics], [data-tracking], [data-ga], [data-gtm]').forEach(el => {
+                    ['data-analytics','data-tracking','data-ga','data-gtm','data-datalayer'].forEach(attr => el.removeAttribute(attr));
+                });
+                clone.querySelectorAll('[hidden], [style*="display:none"], [style*="display: none"], [aria-hidden=true]').forEach(el => el.remove());
+                return clone.outerHTML;
+            });
+            pageText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 5000) : '');
+        }
         }
 
         // Extract cookies
@@ -367,7 +408,10 @@ class PuppeteerPlusStrategy(BaseLibPlusStrategy):
                 ),
                 "timeout": int(request.timeout * 1000),
                 "method": request.method.upper() if request.method else "GET",
-                "body": request.body.decode("utf-8", errors="replace") if request.body else None,
+                "body": (
+                    base64.b64encode(request.body).decode("ascii")
+                    if request.body else None
+                ),
                 "headless": True,
                 # networkidle2 only for Google SERPs (it needs the JS to settle);
                 # everything else gets domcontentloaded so long-lived connections

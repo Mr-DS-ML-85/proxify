@@ -243,7 +243,7 @@ class ScraplingStrategy(BaseStrategy):
             if html:
                 cleaned = clean_dom(html, url=request.url)
                 if cleaned.success:
-                    html = cleaned.clean_html
+                    html = cleaned.clean_html or ""
                     if cleaned.google_results:
                         logger.info(
                             f"ScraplingStrategy: Google DOM cleaned — "
