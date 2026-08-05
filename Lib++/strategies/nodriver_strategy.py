@@ -208,21 +208,63 @@ class StealthBrowserClient(BaseLibPlusStrategy):
                         "arguments": {"instance_id": instance_id, **c},
                     }, timeout=5.0)
 
-            # 4. Navigate
-            nav_res = await self._client.post(f"{self._base_url}/tools/call", json={
-                "name": "navigate",
-                "arguments": {
-                    "instance_id": instance_id, "url": request.url,
-                    "wait_until": "networkidle" if "google." in request.url else "load",
-                    "timeout": int(request.timeout * 1000),
-                },
-            }, timeout=request.timeout + 10)
-            if nav_res.status_code != 200:
-                return self._make_result(request, start, success=False, error="navigate failed")
-
-            nav_data = nav_res.json()
-            final_url = nav_data.get("result", {}).get("content", {}).get("url", "") or request.url
-            await asyncio.sleep(0.5)
+            # 4. Navigate or fetch (GET navigates, other methods use fetch())
+            method = (request.method or "GET").upper()
+            final_url = request.url
+            if method == "GET":
+                nav_res = await self._client.post(f"{self._base_url}/tools/call", json={
+                    "name": "navigate",
+                    "arguments": {
+                        "instance_id": instance_id, "url": request.url,
+                        "wait_until": "networkidle" if "google." in request.url else "load",
+                        "timeout": int(request.timeout * 1000),
+                    },
+                }, timeout=request.timeout + 10)
+                if nav_res.status_code != 200:
+                    return self._make_result(request, start, success=False, error="navigate failed")
+                nav_data = nav_res.json()
+                final_url = nav_data.get("result", {}).get("content", {}).get("url", "") or request.url
+                await asyncio.sleep(0.5)
+            else:
+                fetch_js = f"""
+                (async () => {{
+                    const resp = await fetch('{request.url}', {{
+                        method: '{method}',
+                        headers: {{}},
+                        redirect: 'follow'
+                    }});
+                    return await resp.text();
+                }})();
+                """
+                fetch_res = await self._client.post(f"{self._base_url}/tools/call", json={
+                    "name": "execute_script",
+                    "arguments": {"instance_id": instance_id, "script": fetch_js},
+                }, timeout=request.timeout + 10)
+                if fetch_res.status_code != 200:
+                    return self._make_result(request, start, success=False, error="fetch failed")
+                html = fetch_res.json().get("result", {}).get("content", {}).get("result", "")
+                await asyncio.sleep(0.5)
+                # Extract cookies
+                cook_res = await self._client.post(f"{self._base_url}/tools/call", json={
+                    "name": "get_cookies",
+                    "arguments": {"instance_id": instance_id},
+                }, timeout=10.0)
+                cookies = {}
+                if cook_res.status_code == 200:
+                    raw = cook_res.json().get("result", {}).get("content", [])
+                    if isinstance(raw, list):
+                        for c in raw:
+                            if isinstance(c, dict) and "name" in c:
+                                cookies[c["name"]] = c.get("value", "")
+                if cookies:
+                    await cross_strategy_jar.set_cookies_batch(domain, cookies, source_strategy="stealth_client")
+                # Close
+                await self._client.post(f"{self._base_url}/tools/call", json={
+                    "name": "close_instance", "arguments": {"instance_id": instance_id},
+                }, timeout=5.0)
+                return self._make_result(request, start, success=len(html) > 200, status_code=200,
+                                              final_url=final_url, html=html, cookies=cookies,
+                                              metadata={"via": "stealth_internal", "method": method})
 
             # 5. Extract clean DOM
             clean_js = """
@@ -453,13 +495,26 @@ class NodriverStrategy(BaseLibPlusStrategy):
 
             # Navigation must have a timeout — tab.get() blocks without one, and a
             # slow/challenged site would hang the whole pipeline.
-            await asyncio.wait_for(
-                tab.get(request.url), timeout=request.timeout + 5
-            )
-            await asyncio.sleep(2)
-
-            html = await tab.evaluate("document.documentElement.outerHTML") or ""
-            final_url = await tab.evaluate("window.location.href") or request.url
+            method = (request.method or "GET").upper()
+            if method == "GET":
+                await asyncio.wait_for(
+                    tab.get(request.url), timeout=request.timeout + 5
+                )
+                await asyncio.sleep(2)
+                html = await tab.evaluate("document.documentElement.outerHTML") or ""
+                final_url = await tab.evaluate("window.location.href") or request.url
+            else:
+                fetch_js = (
+                    f"(async () => {{"
+                    f"const resp = await fetch('{request.url}', {{method: '{method}', redirect: 'follow'}});"
+                    f"return await resp.text();"
+                    f"}})()"
+                )
+                html = await asyncio.wait_for(
+                    tab.evaluate(fetch_js), timeout=request.timeout + 5
+                )
+                final_url = request.url
+                await asyncio.sleep(0.5)
 
             try:
                 cr = await tab.send(uc.cdp.network.get_cookies())

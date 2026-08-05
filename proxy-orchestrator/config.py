@@ -167,6 +167,16 @@ class Config:
     # === Request Deduplication ===
     DEDUP_WINDOW: float = float(os.getenv("DEDUP_WINDOW", "5.0"))  # seconds
 
+    # === HTTP Method Options ===
+    # Allowed HTTP methods per strategy. Strategies not listed here
+    # fall back to GET-only. Use uppercase method names.
+    ALLOWED_METHODS: frozenset[str] = frozenset(
+        {m.strip().upper() for m in os.getenv(
+            "ALLOWED_METHODS",
+            "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS",
+        ).split(",") if m.strip()}
+    )
+
 
 # Global singleton
 config = Config()

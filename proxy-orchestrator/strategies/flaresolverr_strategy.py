@@ -113,7 +113,16 @@ class FlareSolverrStrategy(BaseStrategy):
 
         try:
             # Build FlareSolverr request payload
-            cmd = "request.post" if request.method.upper() == "POST" else "request.get"
+            # FlareSolverr natively supports request.get and request.post.
+            # For other methods we still use request.post with a method
+            # override so the underlying browser engine can handle it.
+            method = request.method.upper() if request.method else "GET"
+            if method == "POST":
+                cmd = "request.post"
+            elif method == "GET":
+                cmd = "request.get"
+            else:
+                cmd = "request.post"
             payload: dict = {
                 "cmd": cmd,
                 "url": request.url,
@@ -132,8 +141,8 @@ class FlareSolverrStrategy(BaseStrategy):
             if request.proxy_url:
                 payload["proxy"] = {"url": request.proxy_url}
 
-            # Add post data if method is POST
-            if request.method.upper() == "POST" and request.body:
+            # Add body for POST and other methods that support it
+            if method in ("POST", "PUT", "PATCH") and request.body:
                 payload["postData"] = request.body.decode("utf-8", errors="replace")
 
             # Make the request to FlareSolverr

@@ -41,6 +41,7 @@ The killer feature: **bake your real browser session cookies into the system**. 
 | 🛡️ **TLS fingerprint impersonation** | 40+ JA3/JA4 profiles (Chrome/Safari/Firefox/Edge), per-domain learning, browser-family fallback |
 | 🔍 **Google SERP extraction** | Real `h3` result parsing → clean linked markdown (10 results, snippets, titles) |
 | 🆔 **Agent-friendly API** | `use_browser: true` / `browser: "gui_chrome"` knobs so AI agents can force a real browser |
+| 📡 **All HTTP methods** | `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS` — supported on all 11 strategy tiers including GUI Chrome |
 | ♻️ **Cookie refresh** | `POST /cookies/refresh` + background loop — sessions stay warm without restarts |
 | 📦 **42-type captcha bridge** | ai-captcha-bypass integration (reCAPTCHA, hCaptcha, Turnstile, GeeTest…) |
 | 🔄 **Multi-layer cache** | L1 RAM + L2 Redis, request dedup, circuit breakers, rate limiting |
@@ -96,6 +97,8 @@ All paths in this README are relative to `proxify/` (the repo root).
 | 11 | **gui_chrome** | **Persistent headful Chrome in Xvfb VM** (CDP :9222) | 💀 The final backup — real desktop browser with persistent cookies/cache |
 
 > **Why GUI Chrome is last:** launching a real desktop browser (Xvfb + persistent profile) is computationally expensive. The pipeline first tries cheap HTTP/TLS strategies — and thanks to the cookie import, those usually win. Only when everything else fails does the GUI VM get used.
+
+> **All HTTP methods on all tiers:** every strategy supports `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, and `OPTIONS`. Configure allowed methods via `ALLOWED_METHODS` env var (default: all).
 
 ---
 
@@ -240,7 +243,7 @@ docker exec po-test python3 /app/scripts/stress_test.py 8 4 15
 | Field | Type | Effect |
 |-------|------|--------|
 | `url` | string | **required** — target URL |
-| `method` | string | `GET` (default) / `POST` / … |
+| `method` | string | Any HTTP method — `GET` (default), `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS` — works on all 11 strategy tiers including GUI Chrome |
 | `headers` | object | extra request headers |
 | `body` | string | request body (for POST) |
 | `timeout` | number | per-request timeout (default 30s) |
@@ -340,6 +343,7 @@ All settings live in `proxy-orchestrator/config.py` (a Pydantic `Settings` class
 | `GLOBAL_RATE_LIMIT` | `100` | req/s |
 | `PER_DOMAIN_RATE_LIMIT` | `10` | per-domain req/s |
 | `LOG_LEVEL` | `INFO` | logging verbosity |
+| `ALLOWED_METHODS` | `GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS` | Comma-separated HTTP methods allowed across all strategies. Strategies not listed here fall back to GET-only. |
 
 ---
 

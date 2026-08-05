@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from strategies.base import BaseStrategy, FetchRequest, FetchResult
 from services.cookie_jar import CookieManager
 from services.ua_pool import ua_pool
+from engine.dom_cleaner import clean_dom
 
 logger = logging.getLogger(__name__)
 
@@ -71,14 +72,34 @@ puppeteer.use(StealthPlugin());
             await page.setExtraHTTPHeaders(config.headers);
         }
 
-        // Navigate
-        const response = await page.goto(config.url, {
-            waitUntil: config.waitUntil || 'domcontentloaded',
-            timeout: config.timeout || 30000,
-        });
+        // Navigate (GET) or fetch (all other methods)
+        let html, statusCode, finalUrl;
+        const method = (config.method || "GET").toUpperCase();
+        if (method === "GET") {
+            const response = await page.goto(config.url, {
+                waitUntil: config.waitUntil || 'domcontentloaded',
+                timeout: config.timeout || 30000,
+            });
+            statusCode = response ? response.status() : 0;
+            finalUrl = page.url();
+            html = await page.content();
+        } else {
+            const resp = await page.evaluate(
+                `(url, m, body, headers) => fetch(url, {
+                    method: m,
+                    headers: headers,
+                    body: body || undefined,
+                    redirect: 'follow'
+                }).then(r => r.text())`,
+                config.url, method, config.body || null, config.headers || {}
+            );
+            statusCode = 200;
+            finalUrl = config.url;
+            html = resp;
+        }
 
-        // Wait for Google results if applicable
-        if (config.url.includes('google.') && config.url.includes('/search')) {
+        // Wait for Google results if applicable (GET only)
+        if (method === "GET" && config.url.includes('google.') && config.url.includes('/search')) {
             try {
                 await page.waitForSelector('h3', {timeout: 10000});
             } catch (e) {}
@@ -87,11 +108,6 @@ puppeteer.use(StealthPlugin());
         // Small delay
         await new Promise(r => setTimeout(r, 500));
 
-        const html = await page.content();
-        const statusCode = response ? response.status() : 0;
-        const finalUrl = page.url();
-
-        // Get cookies
         const cookies = await page.cookies();
         const cookieDict = {};
         cookies.forEach(c => { cookieDict[c.name] = c.value; });
@@ -183,6 +199,8 @@ class PuppeteerStrategy(BaseStrategy):
             node_config = {
                 "url": request.url,
                 "userAgent": user_agent,
+                "method": request.method.upper() if request.method else "GET",
+                "body": request.body.decode("utf-8", errors="replace") if request.body else None,
                 "timeout": int(request.timeout * 1000),
                 "waitUntil": "networkidle0" if "google." in request.url else "domcontentloaded",
                 "headers": {
@@ -224,6 +242,17 @@ class PuppeteerStrategy(BaseStrategy):
             html = result_data.get("html", "")
             status_code = result_data.get("status_code", 0)
             cookies = result_data.get("cookies", {})
+
+            # DOM cleaning for all responses
+            if html:
+                cleaned = clean_dom(html, url=request.url)
+                if cleaned.success:
+                    html = cleaned.clean_html
+                    if cleaned.google_results:
+                        logger.info(
+                            f"Puppeteer Google DOM cleaned — "
+                            f"{len(cleaned.google_results)} results"
+                        )
 
             # Store cookies
             domain = urlparse(request.url).netloc

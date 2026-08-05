@@ -432,11 +432,21 @@ class DrissionPagePlusStrategy(BaseLibPlusStrategy):
                 page.session.proxies = {"http": request.proxy_url, "https": request.proxy_url}
 
             # Execute request
-            resp = page.get(
-                request.url,
-                timeout=request.timeout,
-                params=request.params,
-            )
+            method = (request.method or "GET").upper()
+            if method == "GET":
+                resp = page.get(
+                    request.url,
+                    timeout=request.timeout,
+                    params=request.params,
+                )
+            else:
+                resp = page.session.request(
+                    method,
+                    request.url,
+                    data=request.body,
+                    params=request.params,
+                    timeout=request.timeout,
+                )
 
             # Extract cookies
             cookies = {}

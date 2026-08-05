@@ -157,6 +157,37 @@ class ScraplingStrategy(BaseStrategy):
             else:
                 fetcher_class = StealthyFetcher
 
+            # Scrapling StealthyFetcher is navigation-based (GET only).
+            # For non-GET methods fall back to httpx so all HTTP verbs
+            # work across every strategy tier.
+            method = (request.method or "GET").upper()
+            if method != "GET":
+                import httpx as _httpx
+                client = _httpx.AsyncClient(follow_redirects=True, timeout=request.timeout)
+                try:
+                    _resp = await client.request(
+                        method, request.url,
+                        headers={k: v for k, v in request.headers.items()
+                                 if k.lower() not in ("host", "content-length")},
+                        content=request.body,
+                        params=request.params,
+                    )
+                    _cookies = dict(_resp.cookies)
+                    if _cookies:
+                        await self._cookie_manager.set_cookies(domain, _cookies)
+                    return self._make_result(
+                        request, start_time,
+                        success=200 <= _resp.status_code < 400,
+                        status_code=_resp.status_code,
+                        final_url=str(_resp.url),
+                        headers=dict(_resp.headers),
+                        html=_resp.text if "text" in (_resp.headers.get("content-type", "").lower()) else "",
+                        body=_resp.content,
+                        cookies=_cookies,
+                    )
+                finally:
+                    await client.aclose()
+
             # Use async_fetch for non-blocking operation
             response = await fetcher_class.async_fetch(**fetch_kwargs)
 
@@ -207,16 +238,17 @@ class ScraplingStrategy(BaseStrategy):
             except Exception:
                 pass  # Cookie extraction is best-effort
 
-            # ── DOM cleaning for Google search results ──
-            cleaned = None  # Initialize for Google result extraction
-            if is_google_search and html:
+            # ── DOM cleaning for all responses ──
+            cleaned = None
+            if html:
                 cleaned = clean_dom(html, url=request.url)
-                if cleaned.success and cleaned.google_results:
+                if cleaned.success:
                     html = cleaned.clean_html
-                    logger.info(
-                        f"ScraplingStrategy: Google DOM cleaned — "
-                        f"{len(cleaned.google_results)} results extracted"
-                    )
+                    if cleaned.google_results:
+                        logger.info(
+                            f"ScraplingStrategy: Google DOM cleaned — "
+                            f"{len(cleaned.google_results)} results extracted"
+                        )
 
             result = self._make_result(
                 request, start_time,

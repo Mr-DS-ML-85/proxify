@@ -164,67 +164,71 @@ puppeteer.use(StealthPlugin());
         }
 
         // =================================================================
-        // NAVIGATE
+        // NAVIGATE (GET) or fetch (all other methods)
         // =================================================================
-        const response = await page.goto(config.url, {
-            // domcontentloaded by default — networkidle* hangs forever on sites
-            // with long-lived connections (analytics, websockets, GitHub Pages).
-            waitUntil: config.waitUntil || 'domcontentloaded',
-            timeout: config.timeout || 30000,
-        });
-
-        // =================================================================
-        // SMART WAIT — Handle Google, Reddit, Wikipedia
-        // =================================================================
-        if (config.url.includes('google.') && config.url.includes('/search')) {
-            try { await page.waitForSelector('h3', {timeout: 8000}); } catch(e) {}
-        }
-        if (config.url.includes('reddit.com')) {
-            try { await page.waitForSelector('shreddit-app, div[data-testid], faceplate-partial', {timeout: 8000}); } catch(e) {}
-        }
-        if (config.url.includes('wikipedia.org')) {
-            try { await page.waitForSelector('#mw-content-text, #bodyContent', {timeout: 5000}); } catch(e) {}
-        }
-        // Generic: wait for body to have content
-        try {
-            await page.waitForFunction('document.body && document.body.innerText.length > 100', {timeout: 5000});
-        } catch(e) {}
-
-        // Human-like delay
-        await new Promise(r => setTimeout(r, 300 + Math.random() * 500));
-
-        // =================================================================
-        // EXTRACT CLEAN DOM (strips scripts, styles, tracking)
-        // =================================================================
-        const cleanHtml = await page.evaluate(() => {
-            // Clone the document to avoid modifying live DOM
-            const clone = document.documentElement.cloneNode(true);
-
-            // Remove scripts
-            clone.querySelectorAll('script, noscript, iframe, style, link[rel=stylesheet]').forEach(el => el.remove());
-
-            // Remove tracking/metadata elements
-            clone.querySelectorAll('[data-analytics], [data-tracking], [data-ga], [data-gtm]').forEach(el => {
-                ['data-analytics','data-tracking','data-ga','data-gtm','data-datalayer'].forEach(attr => el.removeAttribute(attr));
+        const method = (config.method || "GET").toUpperCase();
+        let statusCode, finalUrl, cleanHtml, pageText;
+        if (method === "GET") {
+            const response = await page.goto(config.url, {
+                waitUntil: config.waitUntil || 'domcontentloaded',
+                timeout: config.timeout || 30000,
             });
+            statusCode = response ? response.status() : 200;
+            finalUrl = page.url();
 
-            // Remove hidden elements
-            clone.querySelectorAll('[hidden], [style*="display:none"], [style*="display: none"], [aria-hidden=true]').forEach(el => el.remove());
+            // =================================================================
+            // SMART WAIT — Handle Google, Reddit, Wikipedia
+            // =================================================================
+            if (config.url.includes('google.') && config.url.includes('/search')) {
+                try { await page.waitForSelector('h3', {timeout: 8000}); } catch(e) {}
+            }
+            if (config.url.includes('reddit.com')) {
+                try { await page.waitForSelector('shreddit-app, div[data-testid], faceplate-partial', {timeout: 8000}); } catch(e) {}
+            }
+            if (config.url.includes('wikipedia.org')) {
+                try { await page.waitForSelector('#mw-content-text, #bodyContent', {timeout: 5000}); } catch(e) {}
+            }
+            // Generic: wait for body to have content
+            try {
+                await page.waitForFunction('document.body && document.body.innerText.length > 100', {timeout: 5000});
+            } catch(e) {}
 
-            // Return cleaned outerHTML
-            return clone.outerHTML;
-        });
+            // Human-like delay
+            await new Promise(r => setTimeout(r, 300 + Math.random() * 500));
 
-        const statusCode = response ? response.status() : 200;
-        const finalUrl = page.url();
+            // =================================================================
+            // EXTRACT CLEAN DOM
+            // =================================================================
+            cleanHtml = await page.evaluate(() => {
+                const clone = document.documentElement.cloneNode(true);
+                clone.querySelectorAll('script, noscript, iframe, style, link[rel=stylesheet]').forEach(el => el.remove());
+                clone.querySelectorAll('[data-analytics], [data-tracking], [data-ga], [data-gtm]').forEach(el => {
+                    ['data-analytics','data-tracking','data-ga','data-gtm','data-datalayer'].forEach(attr => el.removeAttribute(attr));
+                });
+                clone.querySelectorAll('[hidden], [style*="display:none"], [style*="display: none"], [aria-hidden=true]').forEach(el => el.remove());
+                return clone.outerHTML;
+            });
+            pageText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 5000) : '');
+        } else {
+            const resp = await page.evaluate(
+                `(url, m, body, headers) => fetch(url, {
+                    method: m,
+                    headers: headers,
+                    body: body || undefined,
+                    redirect: 'follow'
+                }).then(r => r.text())`,
+                config.url, method, config.body || null, config.headers || {}
+            );
+            statusCode = 200;
+            finalUrl = config.url;
+            cleanHtml = resp;
+            pageText = resp ? resp.substring(0, 5000) : '';
+        }
 
         // Extract cookies
         const cookies = await page.cookies();
         const cookieDict = {};
         cookies.forEach(c => { cookieDict[c.name] = c.value; });
-
-        // Extract page text for analysis
-        const pageText = await page.evaluate(() => document.body ? document.body.innerText.substring(0, 5000) : '');
 
         const result = {
             success: true,
@@ -362,6 +366,8 @@ class PuppeteerPlusStrategy(BaseLibPlusStrategy):
                     )
                 ),
                 "timeout": int(request.timeout * 1000),
+                "method": request.method.upper() if request.method else "GET",
+                "body": request.body.decode("utf-8", errors="replace") if request.body else None,
                 "headless": True,
                 # networkidle2 only for Google SERPs (it needs the JS to settle);
                 # everything else gets domcontentloaded so long-lived connections

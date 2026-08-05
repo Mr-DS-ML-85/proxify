@@ -388,18 +388,63 @@ class PlaywrightStrategy(BaseStrategy):
                 await page.add_init_script(_STEALTH_INIT_SCRIPT)
 
                 timeout_ms = int(request.timeout * 1000)
+                method = request.method.upper() if request.method else "GET"
 
-                response = await page.goto(
-                    request.url,
-                    wait_until="domcontentloaded",
-                    timeout=timeout_ms,
-                )
-
-                current_url = page.url
+                if method == "GET":
+                    response = await page.goto(
+                        request.url,
+                        wait_until="domcontentloaded",
+                        timeout=timeout_ms,
+                    )
+                    current_url = page.url
+                    html = await page.content()
+                    _used_fetch = False
+                else:
+                    current_url = request.url
+                    _used_fetch = True
+                    fetch_args = {
+                        "url": request.url,
+                        "method": method,
+                        "redirect": "follow",
+                        "credentials": "include",
+                    }
+                    if request.headers:
+                        fetch_args["headers"] = {
+                            k: v for k, v in request.headers.items()
+                            if k.lower() not in ("content-length", "host")
+                        }
+                    if request.body:
+                        fetch_args["body"] = request.body.decode(
+                            "utf-8", errors="replace"
+                        )
+                    try:
+                        result = await page.evaluate(
+                            """
+                            (args) => {
+                                return fetch(args.url, args)
+                                    .then(r => ({
+                                        status: r.status,
+                                        text: r.text()
+                                    }))
+                                    .catch(e => { throw new Error(e.message); });
+                            }
+                            """,
+                            fetch_args,
+                        )
+                        status_code = result.get("status", 200)
+                        html = result.get("text", "")
+                    except Exception as e:
+                        return self._make_result(
+                            request, start_time,
+                            success=False, status_code=0,
+                            final_url=current_url, html="",
+                            error=f"Playwright fetch error: {e}",
+                        )
 
                 if "/sorry/" in current_url or "captcha" in current_url.lower():
                     logger.warning(f"Google captcha page at {current_url}")
-                    html = await page.content()
+                    if not _used_fetch:
+                        html = await page.content()
                     return self._make_result(
                         request, start_time,
                         success=False, status_code=200,
@@ -407,7 +452,7 @@ class PlaywrightStrategy(BaseStrategy):
                         error="Google captcha page",
                     )
 
-                if is_google_search:
+                if is_google_search and not _used_fetch:
                     try:
                         await page.wait_for_selector("h3", timeout=5000)
                         await asyncio.sleep(random.uniform(0.05, 0.15))
@@ -415,15 +460,21 @@ class PlaywrightStrategy(BaseStrategy):
                         pass
 
                 await asyncio.sleep(random.uniform(0.05, 0.1))
+                if not _used_fetch:
+                    html = await page.content()
+                else:
+                    status_code = 200
 
-                html = await page.content()
-                status_code = response.status if response else 0
-
-                if is_google_search and html:
+                # DOM cleaning for all responses (GET and non-GET)
+                if html:
                     cleaned = clean_dom(html, url=request.url)
-                    if cleaned.success and cleaned.google_results:
+                    if cleaned.success:
                         html = cleaned.clean_html
-                        logger.info(f"Google DOM cleaned — {len(cleaned.google_results)} results")
+                        if cleaned.google_results:
+                            logger.info(
+                                f"Playwright Google DOM cleaned — "
+                                f"{len(cleaned.google_results)} results"
+                            )
 
                 return self._make_result(
                     request, start_time,
