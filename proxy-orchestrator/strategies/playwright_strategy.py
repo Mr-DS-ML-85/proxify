@@ -413,7 +413,7 @@ class PlaywrightStrategy(BaseStrategy):
                             await route.continue_()
 
                     try:
-                        async with page.route(
+                        async with await page.route(
                             request.url, _override_request
                         ):
                             response = await page.goto(
