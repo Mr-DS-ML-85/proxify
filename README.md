@@ -64,6 +64,7 @@ proxify/                          # repo root
 │   ├── scripts/
 │   │   ├── brave_cookies.py      # 🍪 Export real cookies from Brave → Netscape file
 │   │   ├── gui_browser.sh        # 🖥️ Launch persistent headful Chrome (Xvfb + CDP)
+│   │   ├── tls_mitm_proxy.py     # 🌐 TLS-impersonating MITM proxy for GUI Chrome (1523, :9445)
 │   │   └── test_*.py             # Diagnostic suites
 │   ├── config.py                 # All settings via env vars
 │   ├── main.py                   # Entry point
@@ -372,6 +373,7 @@ All settings live in `proxy-orchestrator/config.py` (a Pydantic `Settings` class
 | Symptom | Fix |
 |---------|-----|
 | Google returns `/sorry/` on the browser path | The GUI Chrome's client hints contradicted its UA (real Chromium 149/Linux vs spoofed Chrome/146/Windows). Fix applied via CDP `Emulation.setUserAgentOverride` (see above). Also check the tunnel MTU (below) — a lossy VPN interface makes every browser request fragment/drop and Google soft-blocks with `/sorry/` even when fingerprints are perfect. |
+| Google still `/sorry/` despite a clean fingerprint on a heavy/flagged IP | The **real Chromium 149 JA3** is now also MITM'd: `scripts/tls_mitm_proxy.py` terminates the GUI Chrome's TLS locally and re-opens every request upstream via `curl_cffi` impersonating the persona (`chrome146`), so Google only ever sees the *impersonated* JA3. `gui_browser.sh` auto-starts it on `127.0.0.1:9445`, injects/trusts the CA (NSS `certutil` + system CA-store + `--use-system-certificates` + `--ignore-certificate-errors-spki-list`), and passes `--proxy-server` + `--disable-quic` to Chrome. On a clean/single request it returns real SERP; persistent `/sorry/` on already-flagged datacenter IPs is a JS **rate/behavioral** challenge layered on top (use a residential exit for those). |
 | Google `429 Rate limited` under load | Our own per-domain rate limiter + 30s throttle circuit (protection, not a Google block). Space requests out or raise `PER_DOMAIN_RATE_LIMIT`. |
 | Reddit `www` thin/empty | Known server-side throttling of this IP; `old.reddit` is the reliable target (verified working, incl. gui_chrome). |
 | Yandex shows captcha | The profile lacked Yandex cookies (looked like incognito). Re-extract with `--all` (or default `--wanted` now includes `yandex`) so `yandexuid`/`yp`/`_yasc` are injected. |

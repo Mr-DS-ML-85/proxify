@@ -42,6 +42,14 @@ from .nodriver_strategy import AntiFingerprintLoader
 
 logger = logging.getLogger(__name__)
 
+# DrissionPage's ChromiumPage default is remote-debugging port 9222 — the SAME
+# port the persistent GUI Chrome (gui_browser.sh) reserves. When DrissionPage
+# launches first it steals 9222, gui_browser.sh then sees the port occupied and
+# skips launching the real GUI browser, and the gui_chrome strategy silently
+# attaches to DrissionPage's throwaway headless instance instead of the stealth
+# persona browser. Override to a dedicated port so the two never collide.
+DRISSIONPAGE_PORT = int(os.getenv("DRISSIONPAGE_PORT", "9225"))
+
 
 def _find_playwright_chromium() -> Optional[str]:
     """Locate the Playwright-installed Chromium binary.
@@ -139,6 +147,13 @@ class DrissionPagePool:
 
             options = ChromiumOptions()
             options.headless(headless)
+            # Dedicated debug port — keep off the GUI Chrome's 9222 (see
+            # _DRISSIONPAGE_PORT). A per-instance free port avoids collisions
+            # when multiple pool instances spawn at once.
+            try:
+                options.set_local_port(DRISSIONPAGE_PORT + len(self._instances))
+            except Exception:
+                pass
             options.set_argument("--no-sandbox")
             options.set_argument("--disable-blink-features=AutomationControlled")
             options.set_argument("--disable-dev-shm-usage")

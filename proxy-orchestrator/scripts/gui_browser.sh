@@ -23,6 +23,42 @@ CHROME="/ms-playwright/chromium-1228/chrome-linux64/chrome"
 PROFILE="/app/gui-profile"
 mkdir -p "$PROFILE"
 
+# Ensure the MITM Root CA is trusted by the GUI Chrome profile (NSS).
+# Required so https sites behind the 127.0.0.1:9445 TLS proxy validate.
+MITM_CA="${TLS_MITM_CA:-/tmp/tls_mitm_ca/ca.crt}"
+MITM_CA_SPKI=""
+if [ -f "$MITM_CA" ]; then
+    # base64 of sha256(SPKI) — the format Chrome's
+    # --ignore-certificate-errors-spki-list expects (accepts certs whose
+    # SubjectPublicKeyInfo matches, letting our leaf certs validate while
+    # everything else stays pinned).
+    MITM_CA_SPKI=$(openssl x509 -in "$MITM_CA" -pubkey -noout 2>/dev/null \
+        | openssl pkey -pubin -outform der 2>/dev/null \
+        | openssl dgst -sha256 -binary 2>/dev/null | base64 | tr -d '\n')
+fi
+if [ -f "$MITM_CA" ] && command -v certutil >/dev/null 2>&1; then
+    if certutil -d sql:"$PROFILE" -L 2>/dev/null | grep -q "Proxify MITM Root CA"; then
+        echo "[gui_browser] MITM CA already trusted"
+    else
+        certutil -d sql:"$PROFILE" -A -n "Proxify MITM Root CA" -t "C,," -i "$MITM_CA" \
+            && echo "[gui_browser] MITM CA trusted in profile" \
+            || echo "[gui_browser] WARN: could not trust MITM CA"
+    fi
+fi
+
+# 1. TLS-impersonating MITM proxy (idempotent) — GUI Chrome routes ALL https
+#    through this so Google/Reddit see the curl_cffi chrome146 JA3 instead of
+#    the real (blocked) Chromium 149 fingerprint. Chrome must trust the CA
+#    below. Fails soft: if the proxy is down Chrome still runs (unencrypted LAN.
+if ! python3 /app/scripts/tls_mitm_proxy.py --check >/dev/null 2>&1; then
+    TLS_MITM_PORT="${TLS_MITM_PORT:-9445}"
+    nohup python3 -u /app/scripts/tls_mitm_proxy.py >/tmp/tls_mitm.log 2>&1 </dev/null &
+    sleep 2
+    echo "[gui_browser] TLS MITM proxy started on :$TLS_MITM_PORT"
+else
+    echo "[gui_browser] TLS MITM proxy already running"
+fi
+
 # 1. Xvfb virtual display (idempotent)
 if ! xdpyinfo -display :99 >/dev/null 2>&1; then
     rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null
@@ -60,6 +96,7 @@ else
     --user-agent="$PERSONA_UA" \
     --user-data-dir="$PROFILE" \
     --remote-debugging-port=9222 \
+    --remote-allow-origins=* \
     --lang=en-US \
     --enable-unsafe-swiftshader \
     --use-angle=swiftshader \
@@ -67,7 +104,12 @@ else
     --ignore-gpu-blocklist \
     --enable-webgl \
     --enable-features=Vulkan \
+    --disable-quic \
     --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
+    --proxy-server=http://127.0.0.1:${TLS_MITM_PORT:-9445} \
+    --proxy-bypass-list="<-loopback>" \
+    --use-system-certificates \
+    --ignore-certificate-errors-spki-list="${MITM_CA_SPKI}" \
     about:blank >>/tmp/gui_chrome.log 2>&1 &
 
 for i in $(seq 1 15); do
