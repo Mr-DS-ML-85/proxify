@@ -64,7 +64,7 @@ proxify/                          # repo root
 │   ├── scripts/
 │   │   ├── brave_cookies.py      # 🍪 Export real cookies from Brave → Netscape file
 │   │   ├── gui_browser.sh        # 🖥️ Launch persistent headful Chrome (Xvfb + CDP)
-│   │   ├── tls_mitm_proxy.py     # 🌐 TLS-impersonating MITM proxy for GUI Chrome (1523, :9445)
+│   │   ├── tls_mitm_proxy.py     # 🌐 TLS-impersonating MITM proxy (HTTP/2, :9445)
 │   │   └── test_*.py             # Diagnostic suites
 │   ├── config.py                 # All settings via env vars
 │   ├── main.py                   # Entry point
@@ -100,6 +100,40 @@ All paths in this README are relative to `proxify/` (the repo root).
 > **Why GUI Chrome is last:** launching a real desktop browser (Xvfb + persistent profile) is computationally expensive. The pipeline first tries cheap HTTP/TLS strategies — and thanks to the cookie import, those usually win. Only when everything else fails does the GUI VM get used.
 
 > **All HTTP methods on all tiers:** every strategy supports `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, and `OPTIONS`. Configure allowed methods via `ALLOWED_METHODS` env var (default: all).
+
+---
+
+## 🌐 GUI Chrome TLS-Impersonating MITM Proxy (`scripts/tls_mitm_proxy.py`)
+
+Even a perfectly-hardened browser fingerprint can fail: the **real Chromium binary has its own JA3/JA4**, and Google learns to flag that exact handshake. `tls_mitm_proxy.py` removes the browser's TLS from the equation entirely:
+
+1. The GUI Chrome is launched with `--proxy-server=http://127.0.0.1:9445` (see `gui_browser.sh`), so every HTTPS request is a `CONNECT` tunnel to the proxy.
+2. The proxy **MITM-terminates** that TLS locally with a per-host leaf cert signed by a local Root CA (`/tmp/tls_mitm_ca/`), so Chrome never touches Google's TLS stack directly.
+3. Each request is then **re-opened upstream with `curl_cffi` impersonating the persona** (`chrome146`) — Google only ever sees the *impersonated* JA3/JA4 + persona client hints, never Chromium 149's.
+
+### Why it looks like a real browser connection
+
+A naive MITM would open a brand-new TLS handshake per request — itself a bot tell. This proxy instead keeps a **persistent per-host `curl_cffi` Session pool (600s TTL)**:
+
+- **HTTP/2 upstream** — one reused connection per origin, exactly like a real Chrome (with automatic fallback to HTTP/1.1 for servers that refuse h2).
+- **Shared cookie jar** — the session carries the persona cookies across requests, so Google sees a consistent session, not a fresh identity per request.
+- **Persona-consistent client hints** — the proxied request asserts `Sec-CH-UA` v="146", `Sec-CH-UA-Full-Version(-List)`, `Sec-CH-UA-Platform-Version` (Windows 11 / 17.0.0), `Sec-Fetch-*` for navigations, and a sanitized cookie subset (the fragile `SID`/`LSID`/`HSID`/`NID` tokens are dropped so an anonymous IP isn't destabilized by stale session markers).
+
+### Trusting the CA (runtime + baked into the image)
+
+For Chrome to validate the MITM'd leaf certs, the Root CA must be trusted — done three ways (`gui_browser.sh` handles it idempotently at runtime; `Dockerfile` bakes in the tooling):
+
+| Method | Where | When |
+|--------|-------|------|
+| NSS profile injection | `certutil -d sql:/app/gui-profile -A -n "Proxify MITM Root CA"` | runtime, per boot |
+| System trust store | `update-ca-certificates` after copying to `/usr/local/share/ca-certificates/` | runtime, after CA is generated |
+| Chrome flags | `--use-system-certificates --ignore-certificate-errors-spki-list=<SPKI>` (SPKI computed automatically) | runtime launch args |
+
+The `Dockerfile` installs `libnss3-tools` (provides `certutil`) so the runtime trust steps work on a fresh image; the CA itself is generated on first proxy start, so it can't be baked into the image.
+
+### Verified
+
+On a flagged datacenter IP, three consecutive Google searches through the reused session all returned **real SERP (200, no `/sorry/`)**. Residual `/sorry/` after sustained rapid browsing is Google's **JS rate/behavioral challenge** (reCAPTCHA), a separate layer from TLS fingerprinting — see the FAQ below.
 
 ---
 

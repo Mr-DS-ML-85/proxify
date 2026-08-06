@@ -59,6 +59,24 @@ else
     echo "[gui_browser] TLS MITM proxy already running"
 fi
 
+# Trust the MITM Root CA at the OS level too. Chrome 117+ uses its own
+# Chrome Root Store, so NSS/certutil alone is ignored for https hosts. Register
+# the CA into the system trust store and run update-ca-certificates so the
+# `--use-system-certificates` Chrome flag (below) actually validates MITM'd
+# leaf certs. Idempotent + self-healing on first boot (CA is created by the
+# proxy just above; this step runs AFTER it exists).
+if [ -f "$MITM_CA" ]; then
+    SYS_CERT=/usr/local/share/ca-certificates/proxify-mitm.crt
+    if [ -f "$SYS_CERT" ] && cmp -s "$MITM_CA" "$SYS_CERT"; then
+        echo "[gui_browser] MITM CA already in system store"
+    else
+        cp "$MITM_CA" "$SYS_CERT" 2>/dev/null \
+            && update-ca-certificates >/dev/null 2>&1 \
+            && echo "[gui_browser] MITM CA registered in system trust store" \
+            || echo "[gui_browser] WARN: could not update system CA store"
+    fi
+fi
+
 # 1. Xvfb virtual display (idempotent)
 if ! xdpyinfo -display :99 >/dev/null 2>&1; then
     rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null

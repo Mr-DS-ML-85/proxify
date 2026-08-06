@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gnupg \
     tzdata \
+    libnss3-tools \
     fonts-liberation \
     fonts-dejavu-core \
     fonts-dejavu-extra \
