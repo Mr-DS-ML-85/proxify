@@ -15,7 +15,31 @@ import sys
 import os
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _PROJECT_ROOT)
+
+# Guard: the Lib++ package (installed as Lib_plus_plus / symlinked Lib__)
+# contains its own bare `engine/`, `strategies/`, etc. directories that would
+# SHADOW this project's top-level packages if Lib++ were ever added to sys.path
+# ahead of us. Bare imports like `from engine.dom_cleaner import ...` MUST
+# resolve to THIS project, not to Lib++'s engine. Pin that invariant up front:
+# remove any Lib++ directory from sys.path and assert engine resolves locally.
+def _protect_bare_packages() -> None:
+    _lib_dir = os.path.join(_PROJECT_ROOT, "Lib++")
+    for entry in list(sys.path):
+        if entry and entry.rstrip("/\\") == _lib_dir:
+            sys.path.remove(entry)
+    if "Lib++" in sys.modules:
+        sys.modules.pop("Lib++", None)
+    import engine as _engine_pkg
+    if os.path.dirname(os.path.abspath(_engine_pkg.__file__)) != _PROJECT_ROOT:
+        raise RuntimeError(
+            "engine resolved to a Lib++ copy (%s) instead of %s — sys.path is "
+            "shadowed; refusing to start" % (_engine_pkg.__file__, _PROJECT_ROOT)
+        )
+
+
+_protect_bare_packages()
 
 from config import config
 from engine.decision_engine import DecisionEngine

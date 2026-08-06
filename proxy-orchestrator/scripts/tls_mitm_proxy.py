@@ -172,8 +172,31 @@ def _persona_headers(h: dict) -> dict:
 
 
 _upstream_sessions_lock = threading.Lock()
-_upstream_sessions: dict[str, object] = {}
+_upstream_sessions: dict[str, tuple[float, object]] = {}
+_per_host_locks: dict[str, threading.Lock] = {}
 _UPSTREAM_TTL = 600.0
+
+# Google block signals that say "stop reusing this session". If any of these
+# show up in an upstream response we EVICT the poisoned per-host session so the
+# NEXT request opens a clean connection + empty cookie jar, instead of riding
+# e.g. a /sorry/ redirect cookie for the rest of the 600s TTL (which is what
+# made a single failed request "stick" — every subsequent request re-3xxed to
+# the same block page). This is how the proxy becomes the dead-end for Google:
+# it fails and RECOVERS immediately rather than coalescing.
+_BLOCK_STATUSES = {429, 403, 401}
+_BLOCK_BODY_TOKENS = {
+    "sorry/index", "captcha", "recaptcha", "unusual traffic",
+    "are you a robot", "verify you are a human", "chrome around me",
+}
+
+
+def _per_host_lock(host: str) -> threading.Lock:
+    with _upstream_sessions_lock:
+        lock = _per_host_locks.get(host)
+        if lock is None:
+            lock = threading.Lock()
+            _per_host_locks[host] = lock
+        return lock
 
 
 def _session_for(host: str):
@@ -181,8 +204,10 @@ def _session_for(host: str):
 
     A real Chrome keeps ONE HTTP/2 (-capable) connection and cookie jar per
     origin. Re-using a curl_cffi Session (instead of a brand-new TLS handshake
-    per request) means Google see downstream connection lifecycle + session reuse rather
-    than an unfriendly 'new handshake every request' pattern.
+    per request) means Google sees session reuse rather than a 'new handshake
+    every request' pattern. A curl_cffi Session is NOT safe for concurrent use,
+    so concurrent relay threads to the SAME host must not bang on it at once —
+    the per-host lock in _upstream serializes them.
     """
     from curl_cffi import requests as cr
     now = time()
@@ -197,20 +222,54 @@ def _session_for(host: str):
         return st[1]
 
 
+def _evict_session(host: str):
+    with _upstream_sessions_lock:
+        _upstream_sessions.pop(host, None)
+
+
+def _is_blocked(resp) -> bool:
+    """Detect a Google-style block/rate-limit so we can recover the session."""
+    if resp is None:
+        return False
+    if getattr(resp, "status_code", 0) in _BLOCK_STATUSES:
+        return True
+    body = getattr(resp, "text", "") or ""
+    low = body.lower()
+    return any(t in low for t in _BLOCK_BODY_TOKENS)
+
+
 def _upstream(method: str, url: str, headers: dict, body: bytes | None):
     host = (urlparse(url).hostname or "")
     sess = _session_for(host)
-    try:
-        return sess.request(method, url, headers=headers, data=body,
-                           impersonate=IMPERSONATE, http_version="2",
-                           timeout=35, allow_redirects=False,
-                           cookies=_load_cookies(host))
-    except Exception:
-        # Fallback: h2 may be unsupported/refused by the server — retry on
-        # http/1.1 rather than failing the request outright.
-        return sess.request(method, url, headers=headers, data=body,
-                            impersonate=IMPERSONATE, timeout=35,
-                            allow_redirects=False, cookies=_load_cookies(host))
+    # Serialize concurrent browser→proxy requests to the same origin onto the
+    # shared connection. This is what a REAL tab in one browser does — it never
+    # issues parallel navigation bursts on one origin connection; it queues.
+    # It also keeps the shared curl_cffi Session from being thrashed by the
+    # ThreadPoolExecutor's 12 concurrent workers (the "10 req/s burst → poison"
+    # failure mode we measured).
+    lock = _per_host_lock(host)
+    with lock:
+        try:
+            resp = sess.request(method, url, headers=headers, data=body,
+                                impersonate=IMPERSONATE, http_version="2",
+                                timeout=35, allow_redirects=False,
+                                cookies=_load_cookies(host))
+        except Exception:
+            # Fallback: h2 may be unsupported/refused by the server — retry on
+            # http/1.1 rather than failing the request outright.
+            resp = sess.request(method, url, headers=headers, data=body,
+                                impersonate=IMPERSONATE, timeout=35,
+                                allow_redirects=False, cookies=_load_cookies(host))
+    if _is_blocked(resp):
+        # Poisoned/flagged session — drop it so the following request gets a
+        # brand new Session and empty cookie jar. This is how the proxy becomes
+        # the dead-end Google can't keep stuck: if /sorry/ sneaks in once we
+        # immediately rotate to a clean handshake instead of feeding the
+        # browser more block pages from the same dead jar.
+        log.warning("blocked %s %s (%s) — evicting session for %s",
+                    method, url, resp.status_code, host)
+        _evict_session(host)
+    return resp
 
 
 def _pack_upstream(resp) -> bytes:
