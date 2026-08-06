@@ -18,6 +18,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
+from time import time
 from urllib.parse import urlparse
 
 from cryptography import x509
@@ -36,6 +37,8 @@ PERSONA_UA = os.getenv(
 PERSONA_ACCEPT_LANG = os.getenv("PERSONA_ACCEPT_LANGUAGE", "en-US,en;q=0.9")
 PERSONA_VIEWPORT = os.getenv("PERSONA_VIEWPORT", "1920")
 PERSONA_PLATFORM = os.getenv("PERSONA_PLATFORM", "Windows").strip('"')
+PERSONA_PLATFORM_VERSION = os.getenv("PERSONA_PLATFORM_VERSION", "17.0.0")
+PERSONA_UA_HINT_VERSION = "146.0.6943.141"
 PERSONA_SEC_CH_UA = '"Not_A Brand";v="24", "Chromium";v="146", "Google Chrome";v="146"'
 IMPERSONATE = os.getenv("TLS_IMPERSONATE", "chrome146")
 LISTEN_HOST = "127.0.0.1"
@@ -156,18 +159,58 @@ def _persona_headers(h: dict) -> dict:
     out["Sec-Ch-Ua"] = PERSONA_SEC_CH_UA
     out["Sec-Ch-Ua-Mobile"] = "?0"
     out["Sec-Ch-Ua-Platform"] = '"%s"' % PERSONA_PLATFORM
+    out["Sec-CH-UA-Platform-Version"] = '"%s"' % PERSONA_PLATFORM_VERSION
+    out["Sec-CH-UA-Full-Version-List"] = '"Chromium";v="146.0.6943.141", "Google Chrome";v="146.0.6943.141", "Not_A Brand";v="24"'
+    out["Sec-CH-UA-Full-Version"] = '"146.0.6943.141"'
     out.setdefault("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
     out["Accept-Encoding"] = "gzip, deflate, br"
+    out.setdefault("Sec-Fetch-Site", "none")
+    out.setdefault("Sec-Fetch-Mode", "navigate")
+    out.setdefault("Sec-Fetch-Dest", "document")
+    out.setdefault("Sec-Fetch-User", "?1")
     return out
 
 
-def _upstream(method: str, url: str, headers: dict, body: bytes | None):
+_upstream_sessions_lock = threading.Lock()
+_upstream_sessions: dict[str, object] = {}
+_UPSTREAM_TTL = 600.0
+
+
+def _session_for(host: str):
+    """Return a persistent per-host upstream session (connection + cookie reuse).
+
+    A real Chrome keeps ONE HTTP/2 (-capable) connection and cookie jar per
+    origin. Re-using a curl_cffi Session (instead of a brand-new TLS handshake
+    per request) means Google see downstream connection lifecycle + session reuse rather
+    than an unfriendly 'new handshake every request' pattern.
+    """
     from curl_cffi import requests as cr
+    now = time()
+    with _upstream_sessions_lock:
+        st = _upstream_sessions.get(host)
+        if st and (now - st[0]) > _UPSTREAM_TTL:
+            _upstream_sessions.pop(host, None)
+            st = None
+        if not st:
+            st = (now, cr.Session(impersonate=IMPERSONATE, timeout=35))
+            _upstream_sessions[host] = st
+        return st[1]
+
+
+def _upstream(method: str, url: str, headers: dict, body: bytes | None):
     host = (urlparse(url).hostname or "")
-    resp = cr.request(method, url, headers=headers, data=body,
-                      impersonate=IMPERSONATE, timeout=35, allow_redirects=False,
-                      cookies=_load_cookies(host))
-    return resp
+    sess = _session_for(host)
+    try:
+        return sess.request(method, url, headers=headers, data=body,
+                           impersonate=IMPERSONATE, http_version="2",
+                           timeout=35, allow_redirects=False,
+                           cookies=_load_cookies(host))
+    except Exception:
+        # Fallback: h2 may be unsupported/refused by the server — retry on
+        # http/1.1 rather than failing the request outright.
+        return sess.request(method, url, headers=headers, data=body,
+                            impersonate=IMPERSONATE, timeout=35,
+                            allow_redirects=False, cookies=_load_cookies(host))
 
 
 def _pack_upstream(resp) -> bytes:
