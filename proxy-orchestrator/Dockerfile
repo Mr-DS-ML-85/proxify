@@ -8,7 +8,7 @@
 #   - fonts installed (an empty font list is an instant container giveaway)
 #   - PLAYWRIGHT_BROWSERS_PATH pinned so browsers land in a known location
 
-FROM python:3.10-slim-bullseye
+FROM python:3.10-slim-bookworm
 
 # 1. Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
