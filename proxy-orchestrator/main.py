@@ -32,10 +32,12 @@ def _protect_bare_packages() -> None:
     if "Lib++" in sys.modules:
         sys.modules.pop("Lib++", None)
     import engine as _engine_pkg
-    if os.path.dirname(os.path.abspath(_engine_pkg.__file__)) != _PROJECT_ROOT:
+    _expected = os.path.join(_PROJECT_ROOT, "engine") + os.sep
+    _actual = os.path.abspath(_engine_pkg.__file__)
+    if not _actual.startswith(_expected):
         raise RuntimeError(
             "engine resolved to a Lib++ copy (%s) instead of %s — sys.path is "
-            "shadowed; refusing to start" % (_engine_pkg.__file__, _PROJECT_ROOT)
+            "shadowed; refusing to start" % (_actual, _expected)
         )
 
 

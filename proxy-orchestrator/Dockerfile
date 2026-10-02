@@ -8,7 +8,7 @@
 #   - fonts installed (an empty font list is an instant container giveaway)
 #   - PLAYWRIGHT_BROWSERS_PATH pinned so browsers land in a known location
 
-FROM python:3.10-slim-bullseye
+FROM python:3.10-slim-bookworm
 
 # 1. Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -81,12 +81,12 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 # 10. Create certs directory (will be populated on startup if missing)
 RUN mkdir -p .certs
 
-# 11. Expose ports (Proxy: 8888, API: 8080)
-EXPOSE 8888 8080
+# 11. Expose ports (Proxy: 8889, API: 9090 — must match .env PROXY_PORT/API_PORT)
+EXPOSE 8889 9090
 
 # 12. Healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:9090/health || exit 1
 
 # 13. Run the application
 CMD ["python", "main.py"]

@@ -23,9 +23,30 @@ CHROME="/ms-playwright/chromium-1228/chrome-linux64/chrome"
 PROFILE="/app/gui-profile"
 mkdir -p "$PROFILE"
 
-# Ensure the MITM Root CA is trusted by the GUI Chrome profile (NSS).
-# Required so https sites behind the 127.0.0.1:9445 TLS proxy validate.
+# 1. TLS-impersonating MITM proxy (idempotent) — MUST run BEFORE the CA trust
+#    blocks below, because the proxy GENERATES the Root CA on first boot. If we
+#    computed the SPKI / trusted the CA before the proxy started, a fresh
+#    container would get an empty --ignore-certificate-errors-spki-list and
+#    Chrome would fail every https navigation with ERR_CERT_AUTHORITY_INVALID.
 MITM_CA="${TLS_MITM_CA:-/tmp/tls_mitm_ca/ca.crt}"
+if ! python3 /app/scripts/tls_mitm_proxy.py --check >/dev/null 2>&1; then
+    TLS_MITM_PORT="${TLS_MITM_PORT:-9445}"
+    nohup python3 -u /app/scripts/tls_mitm_proxy.py >/tmp/tls_mitm.log 2>&1 </dev/null &
+    # Wait (bounded) for the CA to be generated so the trust steps below can
+    # actually read it. Without this, first boot races the CA creation.
+    for _ in $(seq 1 25); do
+        [ -f "$MITM_CA" ] && break
+        sleep 0.4
+    done
+    sleep 1
+    echo "[gui_browser] TLS MITM proxy started on :$TLS_MITM_PORT"
+else
+    echo "[gui_browser] TLS MITM proxy already running"
+fi
+
+# Ensure the MITM Root CA is trusted by the GUI Chrome profile (NSS) and that
+# we capture its SPKI for Chrome's --ignore-certificate-errors-spki-list.
+# Runs AFTER the proxy has generated the CA (see ordering above).
 MITM_CA_SPKI=""
 if [ -f "$MITM_CA" ]; then
     # base64 of sha256(SPKI) — the format Chrome's
@@ -35,6 +56,7 @@ if [ -f "$MITM_CA" ]; then
     MITM_CA_SPKI=$(openssl x509 -in "$MITM_CA" -pubkey -noout 2>/dev/null \
         | openssl pkey -pubin -outform der 2>/dev/null \
         | openssl dgst -sha256 -binary 2>/dev/null | base64 | tr -d '\n')
+    [ -n "$MITM_CA_SPKI" ] || echo "[gui_browser] WARN: MITM CA present but SPKI extraction failed"
 fi
 if [ -f "$MITM_CA" ] && command -v certutil >/dev/null 2>&1; then
     if certutil -d sql:"$PROFILE" -L 2>/dev/null | grep -q "Proxify MITM Root CA"; then
@@ -44,19 +66,6 @@ if [ -f "$MITM_CA" ] && command -v certutil >/dev/null 2>&1; then
             && echo "[gui_browser] MITM CA trusted in profile" \
             || echo "[gui_browser] WARN: could not trust MITM CA"
     fi
-fi
-
-# 1. TLS-impersonating MITM proxy (idempotent) — GUI Chrome routes ALL https
-#    through this so Google/Reddit see the curl_cffi chrome146 JA3 instead of
-#    the real (blocked) Chromium 149 fingerprint. Chrome must trust the CA
-#    below. Fails soft: if the proxy is down Chrome still runs (unencrypted LAN.
-if ! python3 /app/scripts/tls_mitm_proxy.py --check >/dev/null 2>&1; then
-    TLS_MITM_PORT="${TLS_MITM_PORT:-9445}"
-    nohup python3 -u /app/scripts/tls_mitm_proxy.py >/tmp/tls_mitm.log 2>&1 </dev/null &
-    sleep 2
-    echo "[gui_browser] TLS MITM proxy started on :$TLS_MITM_PORT"
-else
-    echo "[gui_browser] TLS MITM proxy already running"
 fi
 
 # Trust the MITM Root CA at the OS level too. Chrome 117+ uses its own

@@ -8,8 +8,8 @@ services:
       dockerfile: proxy-orchestrator/Dockerfile
     container_name: proxy-orchestrator
     ports:
-      - "8888:8888" # Proxy Port
-      - "8080:8080" # API Port
+      - "8889:8889" # Proxy Port (matches PROXY_PORT in .env)
+      - "9090:9090" # API Port (matches API_PORT in .env)
     environment:
       - REDIS_URL=redis://redis:6379/0
       - REDIS_ENABLED=true
@@ -52,8 +52,10 @@ services:
   redis:
     image: redis:7-alpine
     container_name: proxy-redis
-    ports:
-      - "6379:6379"
+    # No host port mapping on purpose — a native redis-server already occupies
+    # 127.0.0.1:6379 on the host. The orchestrator talks to redis over the
+    # compose network (redis://redis:6379), so publishing a host port is
+    # unnecessary and only causes a bind conflict.
     volumes:
       - redis_data:/data
     restart: unless-stopped
