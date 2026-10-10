@@ -43,6 +43,15 @@ logger = logging.getLogger(__name__)
 GUI_CDP_URL = "http://127.0.0.1:9222"
 
 
+# GUI_HONEST_MODE=true: present the real browser exactly as it is (no init
+# script, no UA/client-hint override, no timezone emulation).
+_HONEST = os.getenv("GUI_HONEST_MODE", "false").lower() == "true"
+
+
+class _SkipOverride(Exception):
+    """Control flow: skip an emulation override in honest mode."""
+
+
 def _persona_major() -> str:
     """Chrome major version named by the persona UA ("153")."""
     import re as _re
@@ -304,7 +313,13 @@ class GuiChromeStrategy(BaseStrategy):
                 # Anti-fp must apply to the new document before navigation.
                 # CDP init scripts are context-wide; for a page created in the
                 # shared context, use add_init_script (persists for the page).
-                await page.add_init_script(_STEALTH_INIT_SCRIPT)
+                # GUI_HONEST_MODE: inject NOTHING. Every JS shim leaves a
+                # trace (navigator.webdriver deleted -> undefined instead of
+                # false, toString/descriptor changes, zeroed audio hash) and
+                # the Windows values contradicted a Linux UA. The real
+                # Chromium's own values are consistent by construction.
+                if not _HONEST:
+                    await page.add_init_script(_STEALTH_INIT_SCRIPT)
 
                 # CRITICAL FINGERPRINT CONSISTENCY: the GUI Chrome is a real
                 # Chromium 149 binary on Linux, but the persona pins UA to
@@ -313,7 +328,10 @@ class GuiChromeStrategy(BaseStrategy):
                 # Sec-CH-UA-Platform reports "Linux" — a contradiction Google's
                 # risk engine reads as "fooled". Override the full UA + client
                 # hint metadata so the browser presents ONE coherent identity.
+                cdp = None
                 try:
+                    if _HONEST:
+                        raise _SkipOverride()
                     cdp = await context.new_cdp_session(page)
                     await cdp.send(
                         "Emulation.setUserAgentOverride",
@@ -339,6 +357,8 @@ class GuiChromeStrategy(BaseStrategy):
                             },
                         },
                     )
+                except _SkipOverride:
+                    pass  # honest mode: the browser's native UA + client hints
                 except Exception as e:
                     logger.debug(f"gui_chrome UA/client-hint override failed: {e}")
 
@@ -348,10 +368,16 @@ class GuiChromeStrategy(BaseStrategy):
                 # engine). Pin to Asia/Dhaka via CDP so JS, headers, and
                 # Intl all agree.
                 try:
+                    # honest mode: the container's TZ is set to the host's
+                    # zone, so the native clock already matches the IP
+                    if cdp is None:
+                        raise _SkipOverride()
                     await cdp.send(
                         "Emulation.setTimezoneOverride",
                         {"timezoneId": "Asia/Dhaka"},
                     )
+                except _SkipOverride:
+                    pass
                 except Exception as e:
                     logger.debug(f"gui_chrome timezone override failed: {e}")
 

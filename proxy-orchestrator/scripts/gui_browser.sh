@@ -16,7 +16,12 @@ set -u
 
 PERSONA_UA="${PERSONA_UA:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36}"
 
-CHROME="/ms-playwright/chromium-1228/chrome-linux64/chrome"
+# Prefer official branded Google Chrome when installed (GUI_CHROME_BIN overrides):
+# Playwright's Chromium is "Chrome for Testing" — no "Google Chrome" brand in
+# navigator.userAgentData, a well-known automation-browser marker.
+CHROME="${GUI_CHROME_BIN:-}"
+[ -z "$CHROME" ] && [ -x /usr/bin/google-chrome-stable ] && CHROME=/usr/bin/google-chrome-stable
+[ -n "$CHROME" ] || CHROME="/ms-playwright/chromium-1228/chrome-linux64/chrome"
 [ -x "$CHROME" ] || CHROME=$(find /ms-playwright -name chrome -path "*chrome-linux64*" -type f 2>/dev/null | head -1)
 [ -n "$CHROME" ] && [ -x "$CHROME" ] || { echo "FATAL: no chromium found"; exit 1; }
 
@@ -114,6 +119,12 @@ if [ "$CHROME_UP" = "1" ]; then
     # still continue below: cookie auto-inject must run on every boot
     :
 else
+# Honest mode: no UA override at all — the browser reports its own UA.
+if [ "${GUI_HONEST_MODE:-false}" = "true" ]; then
+    UA_FLAGS=()
+else
+    UA_FLAGS=("--user-agent=$PERSONA_UA")
+fi
 if [ "$GUI_TLS_MITM" = "true" ]; then
     NET_FLAGS=(
         --disable-quic
@@ -139,7 +150,7 @@ fi
     --disable-extensions \
     --window-position=0,0 \
     --window-size=1920,1080 \
-    --user-agent="$PERSONA_UA" \
+    "${UA_FLAGS[@]}" \
     --user-data-dir="$PROFILE" \
     --remote-debugging-port=9222 \
     --remote-allow-origins=* \
