@@ -33,7 +33,7 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from strategies.base import BaseStrategy, FetchRequest, FetchResult
+from strategies.base import BaseStrategy, FetchRequest, FetchResult, is_binary_response
 from services.cookie_jar import CookieManager
 from engine.dom_cleaner import clean_dom, make_google_results_markdown
 from config import config
@@ -414,6 +414,25 @@ class GuiChromeStrategy(BaseStrategy):
                         timeout=timeout_ms,
                     )
                     current_url = page.url
+                    # Direct image / PDF / file URL: return the raw bytes the
+                    # browser received (page.content() would be the viewer DOM)
+                    if response is not None:
+                        _hdrs = dict(response.headers or {})
+                        if is_binary_response(_hdrs):
+                            try:
+                                _raw = await response.body()
+                            except Exception as _e:
+                                _raw = b""
+                                logger.debug(f"gui_chrome binary body unavailable: {_e}")
+                            if _raw:
+                                return self._make_result(
+                                    request, start_time,
+                                    success=200 <= response.status < 400,
+                                    status_code=response.status,
+                                    final_url=current_url,
+                                    headers=_hdrs,
+                                    body=_raw,
+                                )
                     html = await page.content()
                     status_code = response.status if response else 0
                     _used_fetch = False

@@ -12,6 +12,7 @@ but ALL 10 strategies remain available as fallbacks.
 """
 
 import asyncio
+import re
 import logging
 import os
 import sys
@@ -38,6 +39,7 @@ from services.metrics import metrics
 from engine.domain_tracker import DomainTracker
 from engine.request_dedup import RequestDedup
 from engine.antibot import detect_antibot, decide_next_step
+from strategies.base import header_value, is_binary_response
 from engine.quality import score_quality
 from engine.js_challenge_solver import is_js_challenge, is_captcha_page, solve_js_challenge
 from engine.captcha_solver_bridge import solve_captcha_from_html
@@ -516,6 +518,48 @@ class DecisionEngine:
                     break  # Don't retry, escalate to next strategy
                 result.retries = attempt
 
+                # --- Binary payloads (image / PDF / file) ---
+                # HTML antibot + quality scoring is meaningless for bytes: a
+                # perfectly good JPEG scored as an "empty low-quality page",
+                # escalated through every strategy and ended "all strategies
+                # exhausted". A 2xx binary response IS the result.
+                if (
+                    200 <= (result.status_code or 0) < 300
+                    and result.body
+                    and is_binary_response(result.headers, result.body)
+                ):
+                    result.metadata["binary"] = True
+                    result.metadata["content_type"] = header_value(result.headers, "content-type")
+                    result.html = ""
+                    result.success = True
+                    await self._circuit_breaker.record_success(strategy_name, domain)
+                    await self._domain_tracker.record_success(domain, strategy_name, result.latency)
+                    metrics.record_strategy(strategy_name, "success")
+                    logger.info(
+                        f"Pipeline SUCCESS (binary {result.metadata['content_type'] or 'unknown'}, "
+                        f"{len(result.body)} bytes): {request.url} via '{strategy_name}'"
+                    )
+                    return result
+
+                # --- Definitive answers: don't escalate ---
+                # A plain 404/410 is the site's real answer, not a block.
+                # Escalating it to a browser/FlareSolverr only produced a
+                # Chrome "neterror" page reported as 200 and accepted as
+                # content. Likewise a browser error page is never content.
+                _html = result.html or ""
+                if (result.status_code in (404, 410) and not is_captcha_page(_html)
+                        and not is_js_challenge(_html)):
+                    result.success = False
+                    # the strategy may have called this a "block"; it isn't
+                    result.error = f"HTTP {result.status_code} (not found)"
+                    await self._circuit_breaker.record_success(strategy_name, domain)
+                    return result
+                if 'class="neterror"' in _html or "id=\"main-frame-error\"" in _html:
+                    result.success = False
+                    result.error = result.error or "browser network error page"
+                    last_result = result
+                    break
+
                 # --- Anti-bot detection (includes TLS/CDN fingerprint awareness) ---
                 antibot = detect_antibot(
                     html=result.html,
@@ -663,7 +707,10 @@ class DecisionEngine:
                     # results — a grid of result images. Counting them as an
                     # "empty stub" failed every good image search and tripped
                     # the circuit breaker for the next ones.
-                    is_image_search = "udm=2" in request.url or "tbm=isch" in request.url
+                    # udm=2 image search, tbm=isch legacy image search, udm=26
+                    # Google Lens visual matches (Imify's byte-upload path)
+                    _u = f"{request.url} {result.final_url or ''}"
+                    is_image_search = bool(re.search(r"[?&](udm=(2|26)|tbm=isch)(&|$)", _u)) or "vsrid=" in _u
                     has_image_results = (
                         is_image_search
                         and html_.count("<img") >= 20
@@ -801,7 +848,13 @@ class DecisionEngine:
                         f"Pipeline SUCCESS: {request.url} via '{strategy_name}' "
                         f"in {result.latency:.2f}s (ab={antibot.score} q={quality.quality_score})"
                     )
-                    result.success = True
+                    # The fetch worked, but an HTTP error page (404/400/500…)
+                    # is not the content the caller asked for: report it
+                    # honestly (the page is still returned for inspection).
+                    sc = result.status_code or 0
+                    result.success = not (400 <= sc < 600)
+                    if not result.success and not result.error:
+                        result.error = f"HTTP {sc}"
                     return result
 
                 elif decision["action"] == "retry":

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from Lib_plus_plus.processors.dom_to_markdown import html_to_markdown
 from engine.decision_engine import DecisionEngine
-from strategies.base import FetchRequest
+from strategies.base import FetchRequest, header_value, is_binary_response
 from services.metrics import metrics
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,9 @@ class FetchRequestBody(BaseModel):
     # Optional CSS selector the browser strategies wait for before returning
     # the page (JS-rendered results after an upload/POST).
     wait_selector: Optional[str] = None
+    # raw=true: always return the response bytes in body_b64 (also for text).
+    # Binary responses (images, PDFs, files) are returned as bytes regardless.
+    raw: bool = False
 
 
 class FetchResponseBody(BaseModel):
@@ -60,6 +63,24 @@ class FetchResponseBody(BaseModel):
     quality_score: int = 0
     error: Optional[str] = None
     metadata: dict = Field(default_factory=dict)
+    # Raw payload for images / PDFs / files (and for raw=true requests).
+    content_type: str = ""
+    body_b64: Optional[str] = None
+    size: int = 0
+
+
+def _pdf_text(data: bytes, max_pages: int = 50) -> str:
+    """Plain text of a PDF (best-effort; empty when pypdf is missing)."""
+    try:
+        import io as _io
+        from pypdf import PdfReader
+    except Exception:
+        return ""
+    try:
+        reader = PdfReader(_io.BytesIO(data))
+        return "\n\n".join((p.extract_text() or "") for p in reader.pages[:max_pages]).strip()
+    except Exception:
+        return ""
 
 
 class ConfigUpdate(BaseModel):
@@ -206,12 +227,31 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
 
         result = await engine.fetch(request)
 
-        # Extract markdown from HTML
-        markdown_result = html_to_markdown(
-            html=result.html,
-            url=result.url,
-            strategy=result.strategy_used,
+        content_type = header_value(result.headers, "content-type")
+        binary = bool(result.metadata.get("binary")) or (
+            bool(result.body) and is_binary_response(result.headers, result.body)
         )
+        payload = result.body or (result.html.encode() if body.raw and result.html else b"")
+        body_b64 = base64.b64encode(payload).decode("ascii") if (binary or body.raw) and payload else None
+
+        if binary:
+            # no HTML to convert; PDFs get their text as markdown
+            is_pdf = "pdf" in content_type.lower() or (result.body or b"")[:4] == b"%PDF"
+            text = _pdf_text(result.body) if is_pdf else ""
+            markdown_result = {
+                "markdown": text,
+                "word_count": len(text.split()),
+                "extraction_method": "pdf_text" if text else "binary",
+                "title": "",
+                "success": bool(text) or not is_pdf,
+            }
+        else:
+            # Extract markdown from HTML
+            markdown_result = html_to_markdown(
+                html=result.html,
+                url=result.url,
+                strategy=result.strategy_used,
+            )
 
         return FetchResponseBody(
             success=result.success,
@@ -235,6 +275,9 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
             quality_score=result.quality_score,
             error=result.error,
             metadata=result.metadata,
+            content_type=content_type,
+            body_b64=body_b64,
+            size=len(payload) if body_b64 else 0,
         )
 
     # =========================================================================

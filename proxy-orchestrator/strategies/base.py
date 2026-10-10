@@ -9,6 +9,34 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
+_TEXTUAL = ("html", "json", "xml", "javascript", "ecmascript", "csv", "plain", "markdown")
+_MAGIC = (b"%PDF", b"\x89PNG", b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"PK\x03\x04", b"BM", b"II*\x00", b"MM\x00*")
+
+
+def header_value(headers: dict, name: str) -> str:
+    """Case-insensitive header lookup (strategies differ in header casing)."""
+    name = name.lower()
+    for k, v in (headers or {}).items():
+        if str(k).lower() == name:
+            return str(v)
+    return ""
+
+
+def is_binary_response(headers: dict, body: bytes = b"") -> bool:
+    """True for images, PDFs, archives, media — anything that is not a
+    text document. Decided by Content-Type, falling back to magic bytes."""
+    ct = header_value(headers, "content-type").lower()
+    if ct:
+        if ct.startswith("text/") or any(t in ct for t in _TEXTUAL):
+            return False
+        return True
+    if body:
+        head = body[:12]
+        if head.startswith(_MAGIC) or (head[:4] == b"RIFF" and head[8:12] == b"WEBP"):
+            return True
+    return False
+
+
 @dataclass
 class FetchRequest:
     """Represents a fetch request to be processed by a strategy."""
