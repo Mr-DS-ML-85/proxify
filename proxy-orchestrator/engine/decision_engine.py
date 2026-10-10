@@ -658,8 +658,21 @@ class DecisionEngine:
                 
                 if is_google_search:
                     # Check if result has real Google content via h3 or cleaned results
+                    html_ = result.html or ""
+                    # Image results (udm=2 / tbm=isch) have NO <h3> text
+                    # results — a grid of result images. Counting them as an
+                    # "empty stub" failed every good image search and tripped
+                    # the circuit breaker for the next ones.
+                    is_image_search = "udm=2" in request.url or "tbm=isch" in request.url
+                    has_image_results = (
+                        is_image_search
+                        and html_.count("<img") >= 20
+                        and "/sorry/" not in (result.final_url or "")
+                        and "unusual traffic" not in html_
+                    )
                     has_real_content = (
-                        "<h3" in (result.html or "")
+                        "<h3" in html_
+                        or has_image_results
                         or (result.metadata.get("google_results")
                             and len(result.metadata["google_results"]) > 0)
                     )
