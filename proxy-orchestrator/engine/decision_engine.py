@@ -804,7 +804,10 @@ class DecisionEngine:
                 if decision["action"] == "accept":
                     # ── Final DOM cleaning for accepted results ──
                     # Clean the HTML: strip scripts, styles, extract content
-                    if result.html and len(result.html) > 500:
+                    # raw=true / in-page uploads: callers parse the page's
+                    # <script> JSON (Lens results) — cleaning would delete it
+                    keep_raw = request.metadata.get("keep_raw_html")
+                    if result.html and len(result.html) > 500 and not keep_raw:
                         cleaned = clean_dom(result.html, url=request.url)
                         if cleaned.success:
                             result.html = cleaned.clean_html

@@ -89,8 +89,14 @@ _HARD_BLOCK_MARKERS = [
 ]
 
 
+_INLINE_SCRIPT = re.compile(r"(<script\b[^>]*>).*?(</script>)", re.S | re.I)
+
+
 def _has_hard_block_marker(html: str) -> bool:
-    low = html.lower()
+    # Inline script BODIES are skipped: every real Google page ships a fetch
+    # wrapper that checks for "/sorry/index" redirects, which would flag raw
+    # (uncleaned) result pages as blocked. <script src=...> tags are kept.
+    low = _INLINE_SCRIPT.sub(r"\1\2", html).lower()
     return any(m in low for m in _HARD_BLOCK_MARKERS)
 
 

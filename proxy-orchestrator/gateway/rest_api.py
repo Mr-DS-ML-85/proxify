@@ -43,6 +43,12 @@ class FetchRequestBody(BaseModel):
     # raw=true: always return the response bytes in body_b64 (also for text).
     # Binary responses (images, PDFs, files) are returned as bytes regardless.
     raw: bool = False
+    # Upload the multipart file in body_b64 by submitting a real form inside
+    # the GUI browser (needs a browser strategy). upload_landing: page opened
+    # first; result_url_contains: URL fragment that marks the results page.
+    in_page_upload: bool = False
+    upload_landing: Optional[str] = None
+    result_url_contains: Optional[str] = None
 
 
 class FetchResponseBody(BaseModel):
@@ -223,6 +229,14 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
             session_id=body.session_id,
             force_new_session=body.force_new_session,
             wait_selector=body.wait_selector,
+            metadata={
+                k: v for k, v in {
+                    "in_page_upload": body.in_page_upload,
+                    "upload_landing": body.upload_landing,
+                    "result_url_contains": body.result_url_contains,
+                    "keep_raw_html": body.raw or body.in_page_upload,
+                }.items() if v
+            },
         )
 
         result = await engine.fetch(request)

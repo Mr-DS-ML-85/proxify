@@ -26,9 +26,11 @@ Architecture:
 """
 
 import asyncio
+import base64
 import os
 import logging
 import random
+import re
 import time
 from typing import Optional
 from urllib.parse import urlparse
@@ -278,6 +280,96 @@ class GuiChromeStrategy(BaseStrategy):
             return self._browser.contexts[0]
         return None
 
+    @staticmethod
+    def _multipart_file(body: bytes, content_type: str):
+        """First file part of a multipart body -> (field, filename, ctype, bytes)."""
+        m = re.search(r"boundary=([^;]+)", content_type or "", re.I)
+        if not m or not body:
+            return None
+        delim = b"--" + m.group(1).strip().strip('"').encode()
+        for part in body.split(delim)[1:]:
+            if part.startswith(b"--"):
+                continue
+            head, _, data = part.partition(b"\r\n\r\n")
+            text = head.decode("latin-1", "replace")
+            if "filename=" not in text:
+                continue
+            field = re.search(r'name="([^"]*)"', text)
+            fname = re.search(r'filename="([^"]*)"', text)
+            ctype = re.search(r"Content-Type:\s*(\S+)", text, re.I)
+            return (
+                field.group(1) if field else "file",
+                fname.group(1) if fname else "upload.bin",
+                ctype.group(1) if ctype else "application/octet-stream",
+                data[:-2] if data.endswith(b"\r\n") else data,
+            )
+        return None
+
+    async def _form_upload(self, request, start_time, page, context, timeout_ms) -> FetchResult:
+        """Upload the request's file by submitting a real form in the page.
+
+        metadata: upload_landing (page opened first; default = origin of the
+        upload URL), result_url_contains (navigation that means "done";
+        default "/search").
+        """
+        part = self._multipart_file(request.body or b"", request.headers.get("Content-Type", ""))
+        if part is None:
+            return self._make_result(request, start_time, success=False, error="in_page_upload: no file part in body")
+        field, fname, ctype, data = part
+        parsed = urlparse(request.url)
+        landing = request.metadata.get("upload_landing") or f"{parsed.scheme}://{parsed.netloc}/"
+        needle = request.metadata.get("result_url_contains") or "/search"
+        try:
+            await page.goto(landing, wait_until="domcontentloaded", timeout=timeout_ms)
+            await asyncio.sleep(2.0)  # let the landing page settle
+            async with page.expect_navigation(
+                url=lambda u: needle in u, timeout=timeout_ms, wait_until="domcontentloaded",
+            ):
+                await page.evaluate(
+                    """(a) => {
+                      const bin = atob(a.b64); const u8 = new Uint8Array(bin.length);
+                      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+                      const dt = new DataTransfer();
+                      dt.items.add(new File([u8], a.name, {type: a.ctype}));
+                      const f = document.createElement('form');
+                      f.method = 'POST'; f.enctype = 'multipart/form-data'; f.action = a.action;
+                      f.style.display = 'none';
+                      const i = document.createElement('input');
+                      i.type = 'file'; i.name = a.field; i.files = dt.files;
+                      f.appendChild(i); document.body.appendChild(f); f.submit();
+                    }""",
+                    {"b64": base64.b64encode(data).decode("ascii"), "name": fname, "ctype": ctype,
+                     "field": field, "action": request.url},
+                )
+            if request.wait_selector:
+                try:
+                    await page.wait_for_selector(request.wait_selector, timeout=min(12000, timeout_ms))
+                except Exception:
+                    pass
+            else:
+                await asyncio.sleep(3.0)  # results hydrate after domcontentloaded
+            html = await page.content()
+            try:
+                gui_cookies = await context.cookies()
+                if gui_cookies:
+                    await self._cookie_manager.set_cookies(
+                        urlparse(page.url).netloc, {c["name"]: c["value"] for c in gui_cookies},
+                    )
+            except Exception:
+                pass
+            blocked = "/sorry/" in page.url or "unusual traffic" in html
+            return self._make_result(
+                request, start_time,
+                success=not blocked and len(html) > 1000,
+                status_code=429 if blocked else 200,
+                final_url=page.url,
+                html=html,  # raw: results live in <script> JSON — never DOM-clean
+                error="Google captcha page" if blocked else None,
+            )
+        except Exception as e:
+            logger.warning(f"gui_chrome in-page upload failed: {e}")
+            return self._make_result(request, start_time, success=False, error=f"in-page upload error: {e}")
+
     async def fetch(self, request: FetchRequest) -> FetchResult:
         start_time = time.monotonic()
 
@@ -406,6 +498,15 @@ class GuiChromeStrategy(BaseStrategy):
 
                 timeout_ms = int(request.timeout * 1000)
                 method = request.method.upper() if request.method else "GET"
+
+                # In-page file upload (Google Lens & co.): Lens results are
+                # bound to the browser session that made the upload — a
+                # curl-class POST only gets the JS shell back, and fetch()
+                # from the Lens UI is cross-origin. Submitting a real <form>
+                # with the file attached is a top-level navigation the
+                # browser follows to the results page itself.
+                if method == "POST" and request.metadata.get("in_page_upload"):
+                    return await self._form_upload(request, start_time, page, context, timeout_ms)
 
                 if method == "GET":
                     response = await page.goto(
