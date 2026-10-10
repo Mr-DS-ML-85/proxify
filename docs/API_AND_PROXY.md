@@ -24,9 +24,26 @@ Auto-selects the best strategy, handles caching, rate limiting, and escalation.
   "session_id": "my-sticky-session",
   "force_strategy": "nodriver",
   "force_new_session": false,
-  "bypass_cache": false
+  "bypass_cache": false,
+  "use_browser": false,
+  "browser": null,
+  "body_b64": null,
+  "wait_selector": null,
+  "raw": false,
+  "in_page_upload": false,
+  "upload_landing": null,
+  "result_url_contains": null
 }
 ```
+
+| Field | Effect |
+|-------|--------|
+| `use_browser` | pick a real browser (gui_chrome → playwright → puppeteer → nodriver) |
+| `browser` | force an exact strategy (alias of `force_strategy`) |
+| `body_b64` | binary-safe body (base64), wins over `body` — multipart uploads |
+| `wait_selector` | browser strategies wait ≤12 s for this CSS selector before capturing |
+| `raw` | return response bytes in `body_b64` even for text, and skip DOM cleaning |
+| `in_page_upload` | POST only, `gui_chrome` only: open `upload_landing` (default = origin of `url`), submit the multipart file in a real `<form>`, wait for a URL containing `result_url_contains` (default `/search`), return that page raw. Used for Google Lens, which ties results to the uploading browser session. |
 
 **Response:**
 | Field | Type | Description |
@@ -39,6 +56,18 @@ Auto-selects the best strategy, handles caching, rate limiting, and escalation.
 | `html` | string | Full decapsulated HTML |
 | `final_url` | string | Redirect chain final URL |
 | `retries` | int | Number of retries |
+| `markdown` | string | Clean markdown (also PDF text) |
+| `error` | string | Why it failed, e.g. `HTTP 404 (not found)`, `Google captcha page` |
+| `body_b64` | string | Raw bytes for binary responses (images, PDFs, files) and `raw=true` |
+| `content_type` | string | Response content type |
+| `size` | int | Byte length of `body_b64` payload |
+| `metadata` | object | `binary`, `dom_cleaned`, `challenge_detected`, … |
+
+`success` is honest: `false` for HTTP 4xx/5xx and block/CAPTCHA pages.
+`404`/`410` are returned as final answers without escalating through every
+strategy. Block markers (`/sorry/`, `challenge-platform`, …) are matched
+outside inline `<script>` bodies, so real Google pages — whose own JS
+mentions `/sorry/index` — are not flagged as blocked.
 
 ### `GET /health`
 

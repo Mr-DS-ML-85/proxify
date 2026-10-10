@@ -287,6 +287,56 @@ docker exec po-test python3 /app/scripts/stress_test.py 8 4 15
 | `browser` | string | force an exact strategy: `gui_chrome`, `playwright`, `nodriver`, `simple`, … |
 | `force_strategy` | string | alias of `browser` |
 | `session_id` | string | sticky session (UA/cookies) |
+| `force_new_session` | bool | start a fresh sticky session |
+| `params` | object | query-string parameters |
+| `body_b64` | string | binary-safe request body (base64) — multipart uploads, images |
+| `wait_selector` | string | browser strategies wait (≤12 s) for this CSS selector before capturing the page |
+| `raw` | bool | return the response bytes in `body_b64` even for text pages, and skip DOM cleaning (scripts kept) |
+| `in_page_upload` | bool | with `method: POST` + a multipart `body_b64` + `browser: gui_chrome`: the GUI Chrome uploads the file itself by submitting a real form (see below) |
+| `upload_landing` | string | page opened before the upload (default: origin of `url`) |
+| `result_url_contains` | string | URL fragment that marks the results page after the upload (default `/search`) |
+
+**Response** — `{success, status_code, url, final_url, headers, html, markdown,
+markdown_metadata, strategy_used, latency, retries, cached, antibot_score,
+quality_score, error, metadata, body_b64, content_type, size}`.
+
+- **Honest `success`:** `false` for any HTTP 4xx/5xx and for CAPTCHA / block
+  pages. `404`/`410` are final answers (`error: "HTTP 404 (not found)"`) —
+  they are not escalated through every strategy. Google image (`udm=2`) and
+  Lens result pages count as real results.
+- **Binary responses** (images, PDFs, archives, anything non-text) come back
+  as bytes in `body_b64` with `content_type` and `size`; a PDF's text is also
+  extracted into `markdown`. Works on the fast path and in the real browser.
+
+```bash
+# Download an image (bytes in body_b64)
+curl -s -X POST localhost:8080/fetch -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.python.org/static/img/python-logo.png"}' \
+  | python3 -c "import json,sys,base64;d=json.load(sys.stdin);open('logo.png','wb').write(base64.b64decode(d['body_b64']));print(d['content_type'],d['size'])"
+```
+
+### In-browser file uploads (Google Lens)
+
+Some sites bind their results to the browser session that made the upload —
+Google Lens answers a bare HTTP upload with a JS-only shell. With
+`in_page_upload: true` the GUI Chrome opens `upload_landing`, attaches the
+file from your multipart body to a real `<form>`, submits it, follows the
+navigation to the URL containing `result_url_contains`, and returns that
+page's raw HTML (Lens matches live in its `<script>` JSON, so it is never
+DOM-cleaned). Requires the `gui_chrome` strategy.
+
+```python
+import base64, time, uuid, httpx
+img = open("photo.jpg", "rb").read(); b = uuid.uuid4().hex
+body = (f'--{b}\r\nContent-Disposition: form-data; name="encoded_image"; filename="photo.jpg"\r\n'
+        f'Content-Type: image/jpeg\r\n\r\n').encode() + img + f'\r\n--{b}--\r\n'.encode()
+r = httpx.post("http://localhost:8080/fetch", timeout=120, json={
+    "url": f"https://lens.google.com/v3/upload?hl=en&re=df&st={int(time.time()*1000)}&ep=gsbubb",
+    "method": "POST", "headers": {"Content-Type": f"multipart/form-data; boundary={b}"},
+    "body_b64": base64.b64encode(body).decode(), "browser": "gui_chrome",
+    "in_page_upload": True, "upload_landing": "https://lens.google.com/", "bypass_cache": True})
+print(r.json()["final_url"])   # https://www.google.com/search?vsrid=...
+```
 
 ```bash
 curl -s -X POST localhost:8080/fetch \
