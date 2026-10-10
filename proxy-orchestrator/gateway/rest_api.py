@@ -267,8 +267,21 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
                 strategy=result.strategy_used,
             )
 
+        # `success` must mean "here is the page". A strategy that connected but
+        # captured nothing (an empty DOM, a challenge page whose content was
+        # stripped) came back success=True with no html and no body, which a
+        # caller cannot tell from a real page without inspecting every field.
+        # HEAD, 204 and 304 are legitimately empty.
+        content_bytes = len(result.body) if result.body else len((result.html or "").encode())
+        legitimately_empty = body.method.upper() == "HEAD" or result.status_code in (204, 304)
+        success = result.success
+        error = result.error
+        if success and content_bytes == 0 and not legitimately_empty:
+            success = False
+            error = error or f"empty content from {result.strategy_used or 'strategy'} (HTTP {result.status_code})"
+
         return FetchResponseBody(
-            success=result.success,
+            success=success,
             status_code=result.status_code,
             url=result.url,
             final_url=result.final_url,
@@ -287,11 +300,14 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
             cached=result.cached,
             antibot_score=result.antibot_score,
             quality_score=result.quality_score,
-            error=result.error,
+            error=error,
             metadata=result.metadata,
             content_type=content_type,
             body_b64=body_b64,
-            size=len(payload) if body_b64 else 0,
+            # Bytes of content actually returned. It used to count body_b64
+            # only, so every ordinary HTML fetch reported size 0 even with a
+            # full page in `html`, and "size: 0" read as "empty".
+            size=len(payload) if body_b64 else content_bytes,
         )
 
     # =========================================================================

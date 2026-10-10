@@ -60,10 +60,12 @@ Auto-selects the best strategy, handles caching, rate limiting, and escalation.
 | `error` | string | Why it failed, e.g. `HTTP 404 (not found)`, `Google captcha page` |
 | `body_b64` | string | Raw bytes for binary responses (images, PDFs, files) and `raw=true` |
 | `content_type` | string | Response content type |
-| `size` | int | Byte length of `body_b64` payload |
+| `size` | int | Bytes of content returned: the `body_b64` payload when present, otherwise the `html` |
 | `metadata` | object | `binary`, `dom_cleaned`, `challenge_detected`, … |
 
-`success` is honest: `false` for HTTP 4xx/5xx and block/CAPTCHA pages.
+`success` is honest: `false` for HTTP 4xx/5xx, block/CAPTCHA pages, and a
+fetch that returned **no content at all** (`error: "empty content from <strategy>"`),
+except for `HEAD`, `204` and `304`, which are legitimately empty.
 `404`/`410` are returned as final answers without escalating through every
 strategy. Block markers (`/sorry/`, `challenge-platform`, …) are matched
 outside inline `<script>` bodies, so real Google pages — whose own JS
