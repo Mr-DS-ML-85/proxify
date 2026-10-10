@@ -28,8 +28,15 @@ mkdir -p "$PROFILE"
 #    computed the SPKI / trusted the CA before the proxy started, a fresh
 #    container would get an empty --ignore-certificate-errors-spki-list and
 #    Chrome would fail every https navigation with ERR_CERT_AUTHORITY_INVALID.
+# GUI_TLS_MITM=false restores the ORIGINAL behavior: Chrome talks to sites
+# with its own native network stack (TLS, HTTP/2, QUIC). Routing a real
+# Chrome through a Python TLS proxy makes its network fingerprint stop
+# matching the browser — a strong automation signal for Google.
+GUI_TLS_MITM="${GUI_TLS_MITM:-true}"
 MITM_CA="${TLS_MITM_CA:-/tmp/tls_mitm_ca/ca.crt}"
-if ! python3 /app/scripts/tls_mitm_proxy.py --check >/dev/null 2>&1; then
+if [ "$GUI_TLS_MITM" != "true" ]; then
+    echo "[gui_browser] TLS MITM disabled — native Chrome network stack"
+elif ! python3 /app/scripts/tls_mitm_proxy.py --check >/dev/null 2>&1; then
     TLS_MITM_PORT="${TLS_MITM_PORT:-9445}"
     nohup python3 -u /app/scripts/tls_mitm_proxy.py >/tmp/tls_mitm.log 2>&1 </dev/null &
     # Wait (bounded) for the CA to be generated so the trust steps below can
@@ -107,6 +114,18 @@ if [ "$CHROME_UP" = "1" ]; then
     # still continue below: cookie auto-inject must run on every boot
     :
 else
+if [ "$GUI_TLS_MITM" = "true" ]; then
+    NET_FLAGS=(
+        --disable-quic
+        --force-webrtc-ip-handling-policy=disable_non_proxied_udp
+        "--proxy-server=http://127.0.0.1:${TLS_MITM_PORT:-9445}"
+        "--proxy-bypass-list=<-loopback>"
+        --use-system-certificates
+        "--ignore-certificate-errors-spki-list=${MITM_CA_SPKI}"
+    )
+else
+    NET_FLAGS=(--force-webrtc-ip-handling-policy=default_public_interface_only)
+fi
     DISPLAY=:99 "$CHROME" \
     --no-sandbox \
     --disable-dev-shm-usage \
@@ -131,12 +150,7 @@ else
     --ignore-gpu-blocklist \
     --enable-webgl \
     --enable-features=Vulkan \
-    --disable-quic \
-    --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
-    --proxy-server=http://127.0.0.1:${TLS_MITM_PORT:-9445} \
-    --proxy-bypass-list="<-loopback>" \
-    --use-system-certificates \
-    --ignore-certificate-errors-spki-list="${MITM_CA_SPKI}" \
+    "${NET_FLAGS[@]}" \
     about:blank >>/tmp/gui_chrome.log 2>&1 &
 
 for i in $(seq 1 15); do

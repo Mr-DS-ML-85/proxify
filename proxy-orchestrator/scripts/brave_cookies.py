@@ -135,7 +135,10 @@ def write_netscape(cookies, out_path: str, wanted: tuple[str, ...] | None = None
         lines.append("%s\tTRUE\t%s\t%s\t%d\t%s\t%s" % (
             domain, c["path"],
             "TRUE" if c["secure"] else "FALSE",
-            c["expires_utc"] // 1_000_000,
+            # Chromium stores microseconds since 1601-01-01; Netscape files
+            # want Unix seconds — without the epoch shift every cookie looks
+            # valid for ~369 more years and expired sessions are never noticed.
+            max(0, c["expires_utc"] // 1_000_000 - 11_644_473_600),
             c["name"], c["value"]))
         n += 1
     with open(out_path, "w", encoding="utf-8") as f:

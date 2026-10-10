@@ -26,6 +26,7 @@ Architecture:
 """
 
 import asyncio
+import os
 import logging
 import random
 import time
@@ -40,6 +41,14 @@ from config import config
 logger = logging.getLogger(__name__)
 
 GUI_CDP_URL = "http://127.0.0.1:9222"
+
+
+def _persona_major() -> str:
+    """Chrome major version named by the persona UA ("153")."""
+    import re as _re
+
+    m = _re.search(r"Chrome/(\d+)", config.PERSONA_UA or "")
+    return m.group(1) if m else "146"
 
 _VIEWPORTS = [
     {"width": 1920, "height": 1080},
@@ -311,13 +320,19 @@ class GuiChromeStrategy(BaseStrategy):
                         {
                             "userAgent": config.PERSONA_UA,
                             "userAgentMetadata": {
+                                # brands/version/platform DERIVED from the
+                                # persona UA (BrowserPilot fingerprint-profile
+                                # rule: every signal describes ONE identity —
+                                # hardcoded 146/Windows contradicted a Linux
+                                # Chromium 153 persona)
                                 "brands": [
-                                    {"brand": "Chromium", "version": "146"},
-                                    {"brand": "Google Chrome", "version": "146"},
+                                    {"brand": "Chromium", "version": _persona_major()},
+                                    {"brand": "Google Chrome", "version": _persona_major()},
+                                    {"brand": "Not.A/Brand", "version": "99"},
                                 ],
-                                "fullVersion": "146.0.0.0",
+                                "fullVersion": f"{_persona_major()}.0.0.0",
                                 "platform": config.PERSONA_PLATFORM.strip('"'),
-                                "platformVersion": "10.0",
+                                "platformVersion": os.getenv("PERSONA_PLATFORM_VERSION", "10.0"),
                                 "architecture": "x64",
                                 "model": "",
                                 "mobile": False,
