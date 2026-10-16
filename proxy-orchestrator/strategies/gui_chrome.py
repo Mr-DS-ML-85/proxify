@@ -222,6 +222,13 @@ class GuiChromeStrategy(BaseStrategy):
         self._available = False
         self._initialized = False
         self._lock = asyncio.Lock()
+        # Long-lived page for interactive callers (MCP). Ordinary fetches use a
+        # throwaway page per request; an agent driving the browser needs state
+        # to persist between tool calls, so it gets its own page in the same
+        # persistent context — same cookies, same profile, same persona.
+        self._live_page = None
+        self._live_cdp = None
+        self._live_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -230,6 +237,49 @@ class GuiChromeStrategy(BaseStrategy):
     @property
     def priority(self) -> int:
         return 25  # after fast HTTP strategies, before other browsers
+
+    @property
+    def interactive_available(self) -> bool:
+        """True when a live interactive page can be handed out."""
+        return self._available and self._browser is not None
+
+    async def interactor(self):
+        """Return a :class:`PageInteractor` over a persistent GUI Chrome page.
+
+        This is the entry point for MCP-driven browsing. The page lives in the
+        VM's persistent default context, so an agent inherits the real profile's
+        cookies and clearance tokens instead of starting from a blank session.
+
+        Raises RuntimeError when the GUI Chrome VM is not attached.
+        """
+        if not self.interactive_available:
+            raise RuntimeError(
+                "gui_chrome is not attached — the GUI Chrome VM must be "
+                f"reachable at {GUI_CDP_URL}"
+            )
+        async with self._live_lock:
+            if self._live_page is None or self._live_page.is_closed():
+                context = self._browser.contexts[0]
+                self._live_page = await context.new_page()
+                try:
+                    self._live_cdp = await context.new_cdp_session(self._live_page)
+                except Exception:
+                    self._live_cdp = None
+
+        from engine.interaction import PageInteractor
+
+        return PageInteractor(self._live_page, self._live_cdp)
+
+    async def close_interactive(self) -> None:
+        """Tear down the interactive page, leaving the browser and profile up."""
+        async with self._live_lock:
+            if self._live_page is not None and not self._live_page.is_closed():
+                try:
+                    await self._live_page.close()
+                except Exception:
+                    pass
+            self._live_page = None
+            self._live_cdp = None
 
     async def initialize(self) -> None:
         try:

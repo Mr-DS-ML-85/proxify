@@ -499,8 +499,46 @@ All settings live in `proxy-orchestrator/config.py` (a Pydantic `Settings` class
 
 ---
 
+## 🤖 MCP Server — Browser Control for AI Agents
+
+Proxify ships an MCP server so an agent can **drive the browser, not just fetch pages**.
+It reads the accessibility tree — the same structured snapshot a screen reader builds —
+and acts on elements by role and accessible name instead of guessing pixel coordinates.
+
+```bash
+cd proxy-orchestrator
+python proxify_mcp.py                       # stdio
+python proxify_mcp.py --http --port 8090    # streamable HTTP
+```
+
+Works with Codex GUI, Claude Cowork, Claude Desktop, Hermes, OpenCode, Cursor, and
+any MCP client.
+
+```json
+{
+  "mcpServers": {
+    "proxify": {
+      "command": "python3",
+      "args": ["/path/to/proxify/proxy-orchestrator/proxify_mcp.py"],
+      "env": { "PROXIFY_REST_URL": "http://127.0.0.1:8081" }
+    }
+  }
+}
+```
+
+**13 tools:** `browser_open` · `browser_snapshot` · `browser_click` · `browser_type` ·
+`browser_press` · `browser_scroll` · `browser_hover` · `browser_drag` ·
+`browser_screenshot` · `browser_wait` · `browser_wait_for_hydration` · `page_text` ·
+`fetch_url`
+
+See [`docs/mcp.md`](docs/mcp.md) for the full tool reference, client setup, agent
+loops, and troubleshooting.
+
+---
+
 ## 📚 Docs & References
 
+- [`docs/mcp.md`](docs/mcp.md) — **MCP server**: browser control for AI agents
 - [`BUG_POWER.md`](BUG_POWER.md) — full bug audit + every reverse-engineering session (TLS fingerprints, cookie crypto, Docker fingerprinting)
 - [`docs/banner.svg`](docs/banner.svg) — repo banner
 - [`docs/API_AND_PROXY.md`](docs/API_AND_PROXY.md) — REST/WS API + proxy reference

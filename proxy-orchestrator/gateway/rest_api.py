@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from Lib_plus_plus.processors.dom_to_markdown import html_to_markdown
 from engine.decision_engine import DecisionEngine
+from engine.dom_cleaner import clean_spa
 from strategies.base import FetchRequest, header_value, is_binary_response
 from services.metrics import metrics
 
@@ -313,6 +314,145 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
     # =========================================================================
     # RIL (Retrieval Intelligence Layer) — the 8 brains
     # =========================================================================
+
+    # ── Interactive browser bridge ────────────────────────────────────────────
+    # These endpoints expose the persistent GUI Chrome page to an MCP client.
+    # The page lives in the VM's persistent default context, so an agent
+    # inherits the real profile's cookies and Cloudflare clearance tokens
+    # rather than starting from a blank session.
+    #
+    # Strategy is always gui_chrome by design: this is an *interaction* API, and
+    # the whole point is the profiled, persona-consistent session.
+
+    def _gui_chrome():
+        reg = getattr(engine, "_strategies", {})
+        for name, strat in reg.items():
+            if getattr(strat, "name", "") == "gui_chrome":
+                return strat
+        return None
+
+    @app.post("/browser/open", tags=["browser"])
+    async def browser_open(body: dict):
+        strat = _gui_chrome()
+        if strat is None or not getattr(strat, "interactive_available", False):
+            return JSONResponse(
+                {"ok": False,
+                 "error": "gui_chrome VM is not attached; interactive browsing "
+                          "needs the persistent GUI Chrome running"},
+                status_code=503,
+            )
+        url = body.get("url")
+        if not url:
+            return JSONResponse({"ok": False, "error": "url is required"},
+                                status_code=400)
+        try:
+            ix = await strat.interactor()
+            page = ix._page  # noqa: SLF001 - bridge by design
+            await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=int(float(body.get("timeout", 30)) * 1000),
+            )
+            hydrated = None
+            if body.get("wait_for_hydration", True):
+                hydrated = await ix.wait_for_hydration(
+                    timeout=float(body.get("hydration_timeout", 20))
+                )
+            return {"ok": True, "url": page.url, "title": await page.title(),
+                    "hydrated": hydrated}
+        except Exception as e:
+            logger.warning(f"browser_open failed: {e}")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @app.post("/browser/action", tags=["browser"])
+    async def browser_action(body: dict):
+        """Run one interaction verb against the persistent page."""
+        strat = _gui_chrome()
+        if strat is None or not getattr(strat, "interactive_available", False):
+            return JSONResponse(
+                {"ok": False, "error": "gui_chrome VM is not attached"},
+                status_code=503,
+            )
+        action = body.get("action")
+        if not action:
+            return JSONResponse({"ok": False, "error": "action is required"},
+                                status_code=400)
+
+        args = {k: v for k, v in body.items()
+                if k not in ("action",) and v is not None}
+
+        try:
+            ix = await strat.interactor()
+            if action == "snapshot":
+                limit = int(body.get("limit", 120))
+                els = await ix.snapshot(limit=limit)
+                return {"ok": True, "count": len(els), "elements": [
+                    {"i": e.index, "role": e.role, "name": e.name, "tag": e.tag,
+                     "disabled": e.disabled, "focused": e.focused} for e in els]}
+            if action == "click":
+                r = await ix.click(
+                    role=body.get("role"), name=body.get("name"),
+                    text=body.get("text"), selector=body.get("selector"),
+                    x=body.get("x"), y=body.get("y"),
+                    button=body.get("button", "left"),
+                    click_count=int(body.get("clicks", 1)),
+                    nth=int(body.get("nth", 0)),
+                )
+            elif action == "type":
+                r = await ix.type_text(
+                    body.get("text", ""), role=body.get("role"),
+                    name=body.get("name"), selector=body.get("selector"),
+                    delay=int(body.get("delay_ms", 25)),
+                    nth=int(body.get("nth", 0)),
+                )
+            elif action == "press":
+                r = await ix.press_key(body.get("key", "Enter"),
+                                       hold_ms=int(body.get("hold_ms", 0)))
+            elif action == "scroll":
+                r = await ix.scroll(delta_y=int(body.get("delta_y", 600)),
+                                    delta_x=int(body.get("delta_x", 0)),
+                                    selector=body.get("selector"))
+            elif action == "hover":
+                r = await ix.hover(**args)
+            elif action == "drag":
+                r = await ix.drag(to={"x": int(body.get("to_x", 0)),
+                                      "y": int(body.get("to_y", 0))}, **args)
+            elif action == "wait":
+                r = await ix.wait(float(body.get("seconds", 1.0)))
+            elif action == "wait_for_hydration":
+                ok = await ix.wait_for_hydration(
+                    timeout=float(body.get("timeout", 20))
+                )
+                return {"ok": True, "hydrated": ok}
+            elif action == "cursor_position":
+                r = await ix.cursor_position()
+            elif action == "text":
+                html = await ix._page.content()  # noqa: SLF001
+                doc = clean_spa(html, url=ix._page.url)  # noqa: SLF001
+                return {"ok": doc.success, "words": doc.word_count,
+                        "method": doc.method, "error": doc.error,
+                        "text": doc.text_content[:8000]}
+            elif action == "screenshot":
+                import base64 as _b64
+                data = await ix.screenshot(full_page=bool(body.get("full_page")))
+                return {"ok": True, "bytes": len(data),
+                        "png_base64": _b64.b64encode(data).decode()}
+            else:
+                return JSONResponse(
+                    {"ok": False, "error": f"unknown action '{action}'"},
+                    status_code=400,
+                )
+            return {"ok": r.ok, **r.to_dict()}
+        except Exception as e:
+            logger.warning(f"browser_action {action} failed: {e}")
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    @app.post("/browser/close", tags=["browser"])
+    async def browser_close():
+        strat = _gui_chrome()
+        if strat is not None:
+            await strat.close_interactive()
+        return {"ok": True}
 
     @app.get("/ril/stats", tags=["ril"])
     async def ril_stats():
