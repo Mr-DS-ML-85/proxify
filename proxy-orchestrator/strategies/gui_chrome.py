@@ -285,16 +285,39 @@ class GuiChromeStrategy(BaseStrategy):
         try:
             from playwright.async_api import async_playwright
             self._playwright = await async_playwright().start()
-            # Attach to the GUI Chrome the VM launched (never create our own)
-            self._browser = await self._playwright.chromium.connect_over_cdp(
-                GUI_CDP_URL, timeout=15_000,
+            # Attach to the GUI Chrome the VM launched (never create our own).
+            #
+            # main.py spawns gui_browser.sh at startup, which needs several
+            # seconds to bring up Xvfb and Chrome before CDP answers. A single
+            # connect attempt lost that race and left the strategy permanently
+            # unavailable for the life of the process, so retry with backoff
+            # until the browser is listening.
+            last_err: Optional[Exception] = None
+            deadline = time.monotonic() + float(
+                os.getenv("GUI_CHROME_CONNECT_TIMEOUT", "90")
             )
-            self._available = True
-            self._initialized = True
-            logger.info(
-                f"GuiChromeStrategy attached to GUI Chrome @ {GUI_CDP_URL} "
-                f"(persistent profile cookies+cache)"
-            )
+            attempt = 0
+            while time.monotonic() < deadline:
+                attempt += 1
+                try:
+                    self._browser = (
+                        await self._playwright.chromium.connect_over_cdp(
+                            GUI_CDP_URL, timeout=15_000,
+                        )
+                    )
+                    self._available = True
+                    self._initialized = True
+                    logger.info(
+                        f"GuiChromeStrategy attached to GUI Chrome @ "
+                        f"{GUI_CDP_URL} (persistent profile cookies+cache)"
+                        + (f" after {attempt} attempt(s)" if attempt > 1 else "")
+                    )
+                    return
+                except Exception as e:
+                    last_err = e
+                    await asyncio.sleep(min(2.0 * attempt, 6.0))
+
+            raise last_err or RuntimeError("no attempt made")
         except Exception as e:
             logger.warning(
                 f"GuiChromeStrategy: GUI Chrome not reachable @ {GUI_CDP_URL} "

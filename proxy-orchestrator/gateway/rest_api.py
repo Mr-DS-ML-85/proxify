@@ -331,6 +331,37 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
                 return strat
         return None
 
+    _CHALLENGE_MARKERS = (
+        "Just a moment", "Checking your browser", "Attention Required",
+        "challenge-platform", "cf_chl_opt", "Enable JavaScript and cookies",
+    )
+
+    async def _detect_challenge(page) -> dict:
+        """Decide whether Cloudflare gated this page.
+
+        The decisive signal is the absence of ``cf_clearance``: Cloudflare's
+        script tags ('challenge-platform') appear on served pages too, so string
+        matching alone produces false positives. A page carrying a clearance
+        cookie is real, whatever the markup says.
+        """
+        try:
+            html = (await page.content())[:60000]
+        except Exception:
+            return {"detected": False, "reason": "content unavailable"}
+        try:
+            cookies = await page.context.cookies()
+            names = {c.get("name") for c in cookies}
+        except Exception:
+            names = set()
+
+        if "cf_clearance" in names:
+            return {"detected": False, "reason": "cf_clearance present"}
+
+        hits = [m for m in _CHALLENGE_MARKERS if m in html]
+        if hits:
+            return {"detected": True, "markers": hits, "cf_clearance": False}
+        return {"detected": False, "reason": "no challenge markers"}
+
     @app.post("/browser/open", tags=["browser"])
     async def browser_open(body: dict):
         strat = _gui_chrome()
@@ -358,8 +389,22 @@ def create_rest_app(engine: DecisionEngine) -> FastAPI:
                 hydrated = await ix.wait_for_hydration(
                     timeout=float(body.get("hydration_timeout", 20))
                 )
-            return {"ok": True, "url": page.url, "title": await page.title(),
-                    "hydrated": hydrated}
+
+            # Cloudflare's managed challenge is NOT solvable by the GUI Chrome
+            # VM: it answers 200 with a challenge page and never issues
+            # cf_clearance. FlareSolverr does solve it. Detect that case and tell
+            # the caller which strategy will work, instead of handing back a
+            # page that looks fine but is a wall.
+            challenge = await _detect_challenge(page)
+            out = {"ok": True, "url": page.url, "title": await page.title(),
+                   "hydrated": hydrated, "challenge": challenge}
+            if challenge.get("detected"):
+                out["hint"] = (
+                    "Cloudflare challenge detected (no cf_clearance). This page "
+                    "is interactive but gated. Use fetch_url with "
+                    "strategy='flaresolverr' to read the solved content."
+                )
+            return out
         except Exception as e:
             logger.warning(f"browser_open failed: {e}")
             return JSONResponse({"ok": False, "error": str(e)}, status_code=500)

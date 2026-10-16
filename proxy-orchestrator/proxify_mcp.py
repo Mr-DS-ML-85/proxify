@@ -385,34 +385,86 @@ async def page_text() -> dict:
     }
 
 
+def _rest_get(path: str, timeout: float = 10.0) -> dict:
+    """GET a REST endpoint. /health and friends are GET-only routes."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{PROXY_REST}{path}", timeout=timeout) as r:
+            return json.loads(r.read())
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@mcp.tool()
+async def proxify_strategies() -> dict:
+    """List every fetching strategy Proxify can use, with health and rank.
+
+    Call this when a target resists, to pick a strategy deliberately instead of
+    guessing. Strategies are ordered cheapest-first by Proxify itself.
+    """
+    res = _rest_get("/health")
+    strategies = res.get("services", {}).get("strategies", [])
+    guidance = {
+        "curl_cffi_plus": "TLS impersonation. Cheapest; clears most bot checks.",
+        "simple": "Plain HTTPS with a realistic header set.",
+        "drissionpage_plus": "Hybrid session + Chromium page automation.",
+        "nodriver": "CDP-direct, no WebDriver leaks. Good JS-heavy pages.",
+        "tls_rotator": "Rotates TLS profile per domain.",
+        "scrapling": "Stealthy scraper.",
+        "flaresolverr": "Solves Cloudflare's managed challenge. Use for "
+                        "Cloudflare-gated targets.",
+        "playwright": "Full Chromium automation.",
+        "puppeteer": "Node.js automation.",
+        "puppeteer_plus": "Inline script + proxy fallback.",
+        "gui_chrome": "Persistent headful Chrome VM with real profile. "
+                      "Best on Google's consent gate and fingerprint checks, "
+                      "but does NOT solve Cloudflare's challenge.",
+    }
+    return {
+        "strategies": strategies,
+        "count": len(strategies),
+        "guidance": guidance,
+        "tip": "Pass strategy='flaresolverr' to fetch_url for Cloudflare targets.",
+    }
+
+
 @mcp.tool()
 async def fetch_url(
     url: str,
     as_markdown: bool = True,
-    timeout: float = 60.0,
+    strategy: Optional[str] = None,
+    use_browser: bool = False,
+    timeout: float = 90.0,
 ) -> dict:
     """Fetch a URL through Proxify's tiered anti-bot pipeline.
 
-    No browser needed — this delegates to the orchestrator, which escalates
-    through TLS impersonation and headless browsers automatically. Use it for
-    reading pages rather than interacting with them; use browser_* when the
-    agent needs to click, type or log in.
-    """
-    import urllib.request
+    No interaction needed — this delegates to the orchestrator, which escalates
+    through TLS impersonation and headless browsers automatically.
 
-    payload = json.dumps(
-        {"url": url, "method": "GET", "as_markdown": as_markdown}
-    ).encode()
-    req = urllib.request.Request(
-        f"{PROXY_REST}/fetch",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        return {"success": False, "error": f"{type(e).__name__}: {e}", "url": url}
+    Pass strategy= to pin an exact one (see proxify_strategies for the list and
+    when each is appropriate), or use_browser=true to force a real browser.
+    For a Cloudflare-gated URL, use strategy='flaresolverr' — the interactive
+    browser cannot clear that challenge.
+
+    Use this for reading pages; use browser_* when the agent must click, type
+    or log in.
+    """
+    payload: dict[str, Any] = {
+        "url": url, "method": "GET", "as_markdown": as_markdown,
+    }
+    if strategy:
+        payload["force_strategy"] = strategy
+    if use_browser:
+        payload["use_browser"] = True
+
+    res = _rest("/fetch", payload, timeout=timeout)
+    if not res.get("success") and res.get("antibot_score", 0) >= 60:
+        res["hint"] = (
+            "Looks blocked. Retry with strategy='flaresolverr' for Cloudflare, "
+            "or strategy='gui_chrome' for fingerprint-gated targets."
+        )
+    return res
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
