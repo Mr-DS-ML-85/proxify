@@ -381,6 +381,177 @@ def clean_dom(html: str, url: str = "") -> CleanedDocument:
         )
 
 
+# ── Universal heavy-JS SPA cleaner ───────────────────────────────────────────
+
+# Chrome that are framework furniture. Removed only when their removal leaves
+# the document with real content behind, so a page that happens to use <header>
+# for its article is not gutted.
+_BOILERPLATE_TAGS = ("nav", "aside", "footer")
+
+# Structural containers that usually hold the actual content. In order of trust.
+_CONTENT_SELECTORS = (
+    "main", "article", '[role="main"]', "#main", "#content",
+    ".main-content", ".post-content", ".article-content", ".entry-content",
+)
+
+# Framework hydration roots. On a client-rendered page the real content lives
+# inside one of these once JS has run.
+_SPA_ROOTS = ('id="root"', 'id="app"', 'id="__next"', 'id="__nuxt"',
+              "data-reactroot", 'data-reactroot=""')
+
+_UNHYDRATED = (
+    "enable javascript", "please enable javascript", "javascript is required",
+    "we're sorry but", "checking your browser", "just a moment",
+)
+
+
+def _tag_text_length(html: str, tag: str) -> int:
+    """Approximate readable characters inside <tag>…</tag> blocks.
+
+    <script>/<style> bodies are excluded — otherwise a single inline bundle
+    reads as thousands of "visible" characters and an empty hydration shell
+    looks like a full page.
+    """
+    total = 0
+    for m in re.finditer(
+        rf"<{tag}\b[^>]*>(.*?)</{tag}>", html, flags=re.I | re.S
+    ):
+        body = re.sub(
+            r"<(script|style|svg)\b[^>]*>.*?</\1>", " ", m.group(1),
+            flags=re.I | re.S,
+        )
+        body = re.sub(r"<[^>]+>", " ", body)
+        total += len(body.strip())
+    return total
+
+
+def _looks_unhydrated(html: str, visible_len: int) -> bool:
+    """True when the document is a shell that never hydrated."""
+    if visible_len >= 1500:
+        return False
+    low = html.lower()
+    if any(s in low for s in _UNHYDRATED):
+        return True
+    # A root div that is still empty after JS ran means nothing rendered.
+    for root in _SPA_ROOTS:
+        m = re.search(
+            re.escape(root) + r"[^>]*>(.{0,400}?)</", html, flags=re.I | re.S
+        )
+        if m and not re.sub(r"<[^>]+>", "", m.group(1)).strip():
+            return True
+    return False
+
+
+def _extract_content_region(html: str) -> tuple[str, str]:
+    """Return (html, method) narrowed to the best content container found."""
+    # 1. Best structural container wins.
+    for sel in _CONTENT_SELECTORS:
+        tag = sel.strip("[]").split(".")[-1].split("#")[-1]
+        if not re.match(r"^[a-zA-Z][\w-]*$", tag):
+            continue
+        for m in re.finditer(
+            rf"<{tag}\b[^>]*>(.*?)</{tag}>", html, flags=re.I | re.S
+        ):
+            inner = m.group(0)
+            if len(re.sub(r"<[^>]+>", " ", inner).strip()) >= 400:
+                return inner, f"content_region:{tag}"
+
+    # 2. Framework root, if it actually holds content.
+    for root in _SPA_ROOTS:
+        m = re.search(
+            re.escape(root) + r"[^>]*>(.*?)</(?:div|body|html)>",
+            html, flags=re.I | re.S,
+        )
+        if m and len(re.sub(r"<[^>]+>", "", m.group(1)).strip()) >= 400:
+            return m.group(1), f"spa_root:{root}"
+
+    return html, "whole_document"
+
+
+def _drop_boilerplate(html: str) -> str:
+    """Remove nav/aside/footer, but never at the cost of all the content."""
+    total_visible = len(re.sub(r"<[^>]+>", " ", html).strip())
+    for tag in _BOILERPLATE_TAGS:
+        blocks = list(re.finditer(
+            rf"<{tag}\b[^>]*>.*?</{tag}>", html, flags=re.I | re.S
+        ))
+        for m in reversed(blocks):
+            removed_len = len(re.sub(r"<[^>]+>", " ", m.group(0)).strip())
+            if total_visible - removed_len >= 400:
+                html = html[: m.start()] + html[m.end():]
+                total_visible -= removed_len
+    return html
+
+
+def clean_spa(html: str, url: str = "") -> CleanedDocument:
+    """Clean a heavy client-rendered page into readable text.
+
+    Handles the failure mode `clean_dom` cannot: a SPA that returns a large but
+    mostly-empty shell, where stripping <script> leaves only chrome. Isolates
+    the real content container, drops navigation furniture, and reports
+    explicitly when the page never hydrated rather than returning a skeleton
+    that looks like success.
+    """
+    if not html:
+        return CleanedDocument(
+            clean_html="", text_content="", success=False, error="empty_html",
+        )
+
+    try:
+        start_len = len(html)
+        work = _unwrap_chromium_json(html)
+
+        visible_before = _tag_text_length(work, "body") or len(
+            re.sub(r"<[^>]+>", " ", _strip_unwanted_elements(work)).strip()
+        )
+
+        unhydrated = _looks_unhydrated(work, visible_before)
+
+        # Narrow to the content region, then strip scripts/styles.
+        region, region_method = _extract_content_region(work)
+        region = _strip_unwanted_elements(region)
+        region = _drop_boilerplate(region)
+        region = _strip_event_handlers_and_extra_attrs(region)
+
+        text_content = html_unescape(re.sub(r"<[^>]+>", "\n", region))
+        text_content = re.sub(r"[ \t]+", " ", text_content)
+        text_content = re.sub(r"\n\s*\n+", "\n", text_content).strip()
+
+        word_count = len(text_content.split())
+        success = bool(word_count >= 25) and not unhydrated
+
+        if unhydrated:
+            logger.info(
+                f"SPA cleaner: {url or '(no url)'} looks unhydrated "
+                f"({visible_before} visible chars) — fetch needs a JS tier"
+            )
+
+        method = f"spa_cleaner:{region_method}"
+        logger.debug(
+            f"SPA cleaner: {start_len} → {len(region)} chars, "
+            f"{word_count} words, region={region_method}, "
+            f"unhydrated={unhydrated}"
+        )
+
+        return CleanedDocument(
+            clean_html=region,
+            text_content=text_content,
+            word_count=word_count,
+            success=success,
+            method=method,
+            error="unhydrated_spa" if unhydrated else None,
+        )
+
+    except Exception as e:
+        logger.warning(f"SPA cleaner error: {e}")
+        return CleanedDocument(
+            clean_html=html,
+            text_content=re.sub(r"<[^>]+>", " ", html)[:500],
+            success=False,
+            error=str(e),
+        )
+
+
 def extract_google_serp(html: str) -> list[dict]:
     """Convenience function to extract Google SERP results from raw HTML."""
     doc = clean_dom(html, url="https://www.google.com/search?q=dummy")

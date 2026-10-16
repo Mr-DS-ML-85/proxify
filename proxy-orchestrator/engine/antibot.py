@@ -56,6 +56,25 @@ _JS_SHELL_INDICATORS = [
 ]
 
 
+def _visible_text(html: str, limit: int = 40000) -> str:
+    """Return the lowercased markup a user would actually see.
+
+    Drops <script>/<style>/<noscript>/<template> bodies and HTML comments before
+    keyword matching. Block keywords live in prose ("Just a moment...",
+    "Verify you are human"), so scanning visible text is both more accurate and
+    far cheaper than scanning raw markup.
+    """
+    stripped = re.sub(
+        r"<(script|style|noscript|template|svg)\b[^>]*>.*?</\1>",
+        " ",
+        html,
+        flags=re.I | re.S,
+    )
+    stripped = re.sub(r"<!--.*?-->", " ", stripped, flags=re.S)
+    stripped = re.sub(r"<[^>]+>", " ", stripped)
+    return stripped.lower()[:limit]
+
+
 @dataclass
 class AntibotResult:
     """Result of anti-bot detection analysis."""
@@ -91,6 +110,17 @@ def detect_antibot(
     html_lower = html.lower()[:20000]  # Only scan first 20KB
     length = content_length or len(html)
 
+    # Visible-text view: strip <script>/<style>/<noscript> bodies and HTML
+    # comments before keyword matching. Without this, a single <script> block or
+    # a third-party widget config mentioning "cloudflare"/"captcha"/"blocked"
+    # scores a perfectly healthy page as suspicious (seen on nowsecure.nl and
+    # Reddit, both of which are correctly served).
+    html_visible = _visible_text(html)
+
+    # Positive evidence of a block. Keyword/script heuristics only move the score
+    # when one of these holds; otherwise they are informational only.
+    hard_block = status_code in (403, 429, 503) or status_code >= 400
+
     # --- Rule 1: HTTP status code ---
     if status_code in (403, 429, 503):
         score += 40
@@ -99,16 +129,19 @@ def detect_antibot(
         score += 20
         reasons.append(f"error_status_{status_code}")
 
-    # --- Rule 2: Block keywords ---
+    # --- Rule 2: Block keywords (gated) ---
+    # Only counted when there is positive block evidence. A healthy page that
+    # merely *mentions* a security vendor in a widget config must not be
+    # penalised (nowsecure.nl, Reddit both regressed on this rule).
     keyword_hits = 0
     for keyword in _BLOCK_KEYWORDS:
-        if keyword in html_lower:
+        if keyword in html_visible:
             keyword_hits += 1
     if keyword_hits >= 3:
-        score += 35
+        score += 35 if hard_block else 10
         reasons.append(f"block_keywords_{keyword_hits}")
     elif keyword_hits >= 1:
-        score += 15
+        score += 15 if hard_block else 0
         reasons.append(f"block_keywords_{keyword_hits}")
 
     # --- Rule 3: TLS fingerprint block indicators ---
@@ -160,17 +193,24 @@ def detect_antibot(
         score += 10
         reasons.append("js_shell_partial")
 
-    # --- Rule 5: Script ratio ---
+    # --- Rule 5: Script ratio (gated on thin visible content) ---
+    # A high script ratio alone is normal for a hydrated SPA (Reddit sits at
+    # ~0.38 with 100KB+ of real content). It only indicates a problem when
+    # little visible text is left to read.
     script_tags = len(re.findall(r"<script[\s>]", html_lower))
     total_tags = len(re.findall(r"<[a-z]", html_lower))
+    visible_len = len(html_visible)
+    thin_content = visible_len < 1500
     if total_tags > 0:
         script_ratio = script_tags / total_tags
-        if script_ratio > 0.4:
+        if script_ratio > 0.4 and thin_content:
             score += 25
             reasons.append(f"high_script_ratio_{script_ratio:.2f}")
-        elif script_ratio > 0.25:
+        elif script_ratio > 0.25 and thin_content:
             score += 10
             reasons.append(f"moderate_script_ratio_{script_ratio:.2f}")
+        elif script_ratio > 0.25:
+            reasons.append(f"moderate_script_ratio_{script_ratio:.2f}_ok_content")
 
     # --- Rule 6: Content length ---
     if length < 500:
@@ -179,6 +219,17 @@ def detect_antibot(
     elif length < 1000:
         score += 5
         reasons.append(f"short_content_{length}")
+
+    # --- Rule 6b: Visible content length ---
+    # Raw byte size overstates what a reader gets: an unhydrated SPA can be
+    # 10KB+ of <script> with a few dozen characters of visible text. Score on
+    # the text that survives stripping.
+    if visible_len < 200:
+        score += 20
+        reasons.append(f"low_visible_content_{visible_len}")
+    elif visible_len < 600:
+        score += 10
+        reasons.append(f"thin_visible_content_{visible_len}")
 
     # --- Rule 7: Redirect chain ---
     if redirect_count > 3:
