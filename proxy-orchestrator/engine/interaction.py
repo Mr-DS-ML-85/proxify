@@ -511,6 +511,40 @@ class PageInteractor:
         await asyncio.sleep(seconds)
         return ActionResult(True, "wait", f"{seconds}s")
 
+    async def wait_for_clearance(
+        self, timeout: float = 30.0, interval: float = 1.0
+    ) -> bool:
+        """Wait for a Cloudflare ``cf_clearance`` cookie to be issued.
+
+        The managed challenge resolves asynchronously — the page can sit at 200
+        with challenge markup for several seconds before the cookie lands.
+        Polling for the cookie is the only reliable success signal: the
+        'challenge-platform' script tag is injected on served pages too, so
+        string matching gives false positives.
+
+        Returns True once the cookie is present, False on timeout.
+        """
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                cookies = await self._page.context.cookies()
+                if any(c.get("name") == "cf_clearance" for c in cookies):
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(interval)
+        return False
+
+    async def clearance_cookies(self) -> dict[str, str]:
+        """Return current cookies as a simple name→value mapping."""
+        try:
+            cookies = await self._page.context.cookies()
+            return {c.get("name", ""): c.get("value", "") for c in cookies
+                    if c.get("name")}
+        except Exception as e:
+            logger.debug(f"clearance_cookies failed: {e}")
+            return {}
+
     async def wait_for_hydration(self, timeout: float = 15.0) -> bool:
         """Wait for a client-rendered app to actually mount.
 
