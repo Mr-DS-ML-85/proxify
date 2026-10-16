@@ -8,8 +8,14 @@ services:
       dockerfile: proxy-orchestrator/Dockerfile
     container_name: proxy-orchestrator
     ports:
-      - "8889:8889" # Proxy Port (matches PROXY_PORT in .env)
-      - "9090:9090" # API Port (matches API_PORT in .env)
+      # HTTP CONNECT proxy. The server binds PROXY_PORT (default 8888) inside
+      # the container, so the mapping must target 8888 — the previous 8889:8889
+      # published nothing.
+      - "8888:8888"
+      # REST API. API_PORT defaults to 8080 inside the container. Host 8081 is
+      # used because 9090 on the host is held by searchos-prometheus, which is
+      # what left the orchestrator "unhealthy" while it was actually serving.
+      - "8081:8080"
     environment:
       - REDIS_URL=redis://redis:6379/0
       - REDIS_ENABLED=true
